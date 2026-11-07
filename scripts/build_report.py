@@ -368,11 +368,12 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
 
     # ---------------- 1. github ----------------
     add_section(doc, "1. GitHub 链接")
-    add_body(doc, "仓库地址：`https://github.com/lueg777/work_image`。代码按仓库结构整理"
-                  "（含 `.gitignore`、依赖清单与文档），可直接 `git init && git push` 到该仓库；"
-                  "若最终地址有变，改 `scripts/build_report.py` 里的这一行后重跑即可，不必手工改 docx。")
+    add_body(doc, "仓库地址：`https://github.com/lueg777/work_image`。本地已完成 `git init` 与首次"
+                  "提交（分支 `main`，31 个文件，工作区干净），`origin` 已指向该仓库；"
+                  "推上去之后此链接即为最终代码。若地址有变，改 `scripts/build_report.py` 里"
+                  "这一行后重跑即可，不必手工改 docx。")
     add_body(doc, "为保证评分时不依赖网络，提交包内 `3_可选附件或代码/aigc-freq-forensics/` "
-                  "放置同一份代码快照，与仓库内容一致；两者如有差异，以 GitHub 为准。")
+                  "放置同一份代码快照（逐文件 SHA-1 比对一致）；两者如有差异，以 GitHub 为准。")
 
     # ---------------- 2. task ----------------
     add_section(doc, "2. 任务描述 你要做什么")
