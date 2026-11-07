@@ -73,6 +73,9 @@ aigc-freq-forensics/
 │   ├── smoke_test.py           # 无数据集自检（70 项）
 │   ├── prepare_data.py         # organize / verify / manifest（torch-free）
 │   ├── download_data.py        # 下载 → 解压 → 摆位 → 体检，一条命令
+│   ├── profile_data.py         # 统计两侧容器格式/分辨率 → results/data_profile.csv
+│   ├── calibrate_threshold.py  # 阈值校准（全局 + 每生成器上界）→ results/calibration_summary.json
+│   ├── make_report_figures.py  # 三张图（谱图 / 算子消融 / 鲁棒性）→ figs/
 │   └── build_report.py         # 生成交作业的 1_报告.docx（幂等，可重跑）
 └── src/
     ├── ops/residual_ops.py     # ★ 核心：算子族
