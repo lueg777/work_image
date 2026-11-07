@@ -1,9 +1,20 @@
 # 项目计划与决策日志
 
-> 状态：骨架完成并**已实机验证**。torch 路径（算子族、模型、训练、评测、消融驱动）已在
-> CPU torch 2.15.0+cpu 上跑通：`smoke_test.py` 49/49 通过，`train.py` / `test.py --cross
-> --robustness` / `sweep.py --mode pretrained` 在合成数据上端到端出表。
-> **未做的**：真实数据集上的任何实验（W1 起）。
+> 状态：**已完成**。代码与实验都在真机上跑过。
+>
+> - 自检：`scripts/smoke_test.py --require-torch` **70/70 通过**（Python 3.13 + torch 2.8.0+cu129）。
+> - 真实数据：`AIGI_test` 34.7 GB / **152,598 张 / 17 个生成器**（GAN 8 + 扩散 9），
+>   硬链接摆位后 `prepare_data.py verify` 报 0 error / 0 warning。
+> - 基线：官方 `NPR.pth`（146/146 张量、1,437,761 参数）全量评测
+>   **Acc 82.65 / AUC 92.41 / AP 91.18**（Resize(256) 不裁剪口径），复现出论文
+>   "GAN 好于扩散"的核心现象（90.50 vs 75.68）。
+> - 消融：8 个残差算子 × 17 生成器（每类 300 张）→ `runs/sweep/`；鲁棒性 5 档 →
+>   `runs/real/npr256/`；阈值校准 → `results/calibration_summary.json`。
+> - 报告：`【图像处理】-01234567-姓名/1_报告.docx`（由 `scripts/build_report.py` 一键重出，
+>   9 表 3 图）。
+>
+> **仍未做的**：`--mode scratch`（每个算子从头训练）——没有 ForenSynths 训练集（30 GB，
+> 本机网络不可达），所以消融结论是 **pretrained 探针**语义，不是性能结论。
 
 ## 1. 研究问题
 
@@ -26,9 +37,17 @@ x = conv1(NPR * 2.0 / 3.0)
 
 | 用途 | 数据集 | 来源 | 规模 |
 | --- | --- | --- | --- |
-| 训练/验证 | ForenSynths（4 类：car/cat/chair/horse） | CNNDetection 百度盘<br>`https://pan.baidu.com/s/1l-rXoVhoc8xJDl20Cdwy4Q?pwd=ft8b` | 20 类 × 36k 图，取 4 类子集 |
-| 泛化测试 | ForenSynths_test + GANGen-Detection + DiffusionForensics + UniversalFakeDetect + Diffusion1kStep | 同上前者；Diffusion1kStep 在<br>`https://drive.google.com/drive/folders/14f0vApTLiukiPvIHukHDzLujrvJpDpRq` | 16+ 生成器 |
+| **实际使用：泛化测试** | **AIGI_test**（NPR 仓库同源测试集） | Kaggle 打包 zip（34.7 GB），本机 `database\AIGI_test-001.zip` | **152,598 张 / 17 生成器（GAN 8 + 扩散 9）** |
+| 原计划：训练/验证 | ForenSynths（4 类：car/cat/chair/horse） | CNNDetection 百度盘<br>`https://pan.baidu.com/s/1l-rXoVhoc8xJDl20Cdwy4Q?pwd=ft8b` | 20 类 × 36k 图，取 4 类子集 |
+| 原计划：泛化测试 | ForenSynths_test + GANGen-Detection + DiffusionForensics + UniversalFakeDetect + Diffusion1kStep | 同上前者；Diffusion1kStep 在<br>`https://drive.google.com/drive/folders/14f0vApTLiukiPvIHukHDzLujrvJpDpRq` | 16+ 生成器 |
 | 不推荐 | GenImage | arXiv 2306.08571 | 百万级，8GB 显存 + 消费级带宽不划算 |
+
+**实际执行与计划的偏差**：本机网络到 Google Drive / HuggingFace 全部超时，只拿到了 AIGI_test
+（测试集）与官方 `NPR.pth`（权重），**没拿到 ForenSynths 训练集**。因此最终的实验设计是
+"官方权重 + 8 个残差算子替换 + 17 生成器评测"，语义是 **pretrained 探针**（见 D17），
+不是"训练 8 次再比性能"。AIGI_test 内部还有一处必须写明的混杂：9 个扩散生成器的 real 全是
+JPEG、fake 全是 PNG，且两侧分辨率系统性不同（`scripts/profile_data.py` 实测，
+报告 3.1 节）——所以"扩散组掉点"不能干净地归因于生成器类型。
 
 训练类别与测试生成器**不重叠**（ProGAN 系列训练 → StyleGAN/ADM/SD/Glide 测试），
 避免数据泄漏：ForenSynths 的 20 类共用同一批真实源图，所以"真实图"在 train/test 间必须

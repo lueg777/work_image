@@ -42,6 +42,28 @@ WORKSPACE = os.path.dirname(REPO_ROOT)
 TEMPLATE = os.path.join(WORKSPACE, "【图像处理】-01234567-姓名", "1_报告.docx")
 SWEEP_CSV = os.path.join(REPO_ROOT, "runs", "sweep", "cross_all_ops.csv")
 SWEEP_JSON = os.path.join(REPO_ROOT, "runs", "sweep", "summary.json")
+RESULTS_DIR = os.path.join(REPO_ROOT, "results")
+CALIB_CSV = os.path.join(RESULTS_DIR, "calibration.csv")
+CALIB_JSON = os.path.join(RESULTS_DIR, "calibration_summary.json")
+PROFILE_CSV = os.path.join(RESULTS_DIR, "data_profile.csv")
+FIG_DIR = os.path.join(REPO_ROOT, "figs")
+FIG_SPECTRUM = os.path.join(FIG_DIR, "fig_spectrum.png")
+FIG_ABLATION = os.path.join(FIG_DIR, "fig_ablation.png")
+FIG_ROBUST = os.path.join(FIG_DIR, "fig_robust.png")
+REFERENCES: List[str] = [
+    "[1] Tan C., Zhao Y., Wei S., Gu G., Liu Q. Rethinking the Up-Sampling Operations in "
+    "CNN-based Generative Network for Generalizable Deepfake Detection. CVPR, 2024. "
+    "（NPR 原文，本项目的上游实现与官方权重来源）",
+    "[2] Wang S.-Y., Wang O., Owens A., Nagarajan I., Efros A. A. CNN-Generated Images Are "
+    "Surprisingly Easy to Spot. CVPR, 2020. （CNNSpot / ForenSynths 与跨生成器测试协议）",
+    "[3] Liu Z., Wang Y., Xu Z., et al. AIGCDetectBenchmark / AIGCDetect: AIGC 检测基准与权重集合. "
+    "2024–2026. （本报告使用的 AIGI_test 测试集与基线权重）",
+    "[4] Frank J., Eisenhofer T., Schönherr L., Fischer A., Kolossa D., Holz T. Leveraging "
+    "Frequency Analysis for Deep Fake Image Recognition. ICML, 2020. （频域指纹的理论依据）",
+    "[5] Zhu M., Chen H., Yan Q., et al. GenImage: A Million-Scale Benchmark for Detecting "
+    "AI-Generated Images. NeurIPS Datasets and Benchmarks, 2023. （百万级基准，本报告未使用但列为后续可扩展）",
+]
+REPO_URL = "https://github.com/lueg777/work_image"
 
 BODY_FONT = "宋体"
 HEAD_FONT = "黑体"
@@ -127,14 +149,94 @@ def add_body(doc, text: str, size: float = 10.5, indent: bool = True,
     return p
 
 
-def add_section(doc, title: str):
+def _outline(paragraph, level: int) -> None:
+    """Give the paragraph a real outline level so the navigation pane and any
+    generated TOC see the section structure. The template ships only the Normal
+    style, so faking a Heading style is not an option; outlineLvl is what Word
+    actually reads for navigation."""
+    pPr = paragraph._p.get_or_add_pPr()
+    for old in pPr.findall(qn("w:outlineLvl")):
+        pPr.remove(old)
+    lvl = OxmlElement("w:outlineLvl")
+    lvl.set(qn("w:val"), str(level))
+    pPr.append(lvl)
+
+
+def add_section(doc, title: str, level: int = 0):
     p = doc.add_paragraph()
     pf = p.paragraph_format
     pf.space_before = Pt(14)
     pf.space_after = Pt(6)
     pf.keep_with_next = True
     _styled_run(p, title, 13, HEAD_FONT, bold=True)
+    _outline(p, level)
     return p
+
+
+def add_subsection(doc, title: str, level: int = 1):
+    """Numbered sub-heading (5.1 ...): slightly smaller, still outlined."""
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.space_before = Pt(8)
+    pf.space_after = Pt(3)
+    pf.keep_with_next = True
+    _styled_run(p, title, 11, HEAD_FONT, bold=True)
+    _outline(p, level)
+    return p
+
+
+def add_hyperlink(paragraph, url: str, text: Optional[str] = None,
+                  size: float = 10.5) -> None:
+    """Real clickable hyperlink (a bare URL in a run is just underlined text)."""
+    part = paragraph.part
+    r_id = part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), r_id)
+    run = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+    rFonts = OxmlElement("w:rFonts")
+    for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        rFonts.set(qn(attr), CODE_FONT)
+    rPr.append(rFonts)
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), str(int(size * 2)))
+    rPr.append(sz)
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    rPr.append(color)
+    u = OxmlElement("w:u")
+    u.set(qn("w:val"), "single")
+    rPr.append(u)
+    run.append(rPr)
+    t = OxmlElement("w:t")
+    t.text = text or url
+    run.append(t)
+    link.append(run)
+    paragraph._p.append(link)
+
+
+def add_figure(doc, path: str, caption: str, width_cm: float = 14.4) -> bool:
+    """Embed a PNG (if it exists) and its caption below it."""
+    if not os.path.isfile(path):
+        add_body(doc, f"（缺图：`{os.path.relpath(path, REPO_ROOT)}`，"
+                      f"先跑 `python scripts/make_report_figures.py`）", size=9)
+        return False
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.keep_with_next = True
+    p.add_run().add_picture(path, width=Cm(width_cm))
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cap.paragraph_format.space_before = Pt(0)
+    cap.paragraph_format.space_after = Pt(6)
+    add_rich(cap, caption, size=9)
+    return True
 
 
 def add_caption(doc, text: str):
@@ -446,6 +548,88 @@ def protocol_rows() -> List[List[str]]:
     return out
 
 
+def load_calibration():
+    """Threshold-calibration summary, or None when the experiment has not run."""
+    if not os.path.isfile(CALIB_JSON):
+        return None
+    try:
+        with open(CALIB_JSON, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def load_profile() -> List[dict]:
+    if not os.path.isfile(PROFILE_CSV):
+        return []
+    with open(PROFILE_CSV, encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def profile_rows(rows: Sequence[dict]) -> List[List[str]]:
+    """Collapse 17 generators into the archetypes that matter for confounding.
+
+    The question is not "what does each generator look like" but "is the label
+    collinear with container format or resolution", so group by that pattern
+    rather than by exact pixel numbers (500x375 vs 500x380 is not a difference).
+    ``.jpg`` and ``.jpeg`` are the same container and must not split a group.
+    """
+    if not rows:
+        return []
+
+    def _ext(value: str) -> str:
+        raw = (value or "").strip().lower().lstrip(".")
+        if raw in ("jpg", "jpeg", "jpe"):
+            return "JPEG"
+        if raw in ("png",):
+            return "PNG"
+        return raw.upper() or "—"
+
+    def _hw(row, side):
+        try:
+            w = int(round(float(row.get(f"{side}_w") or 0)))
+            h = int(round(float(row.get(f"{side}_h") or 0)))
+        except Exception:
+            w = h = 0
+        return w, h
+
+    groups: Dict[tuple, List[tuple]] = {}
+    for row in rows:
+        rw, rh = _hw(row, "real")
+        fw, fh = _hw(row, "fake")
+        key = (_ext(row.get("real_ext")), _ext(row.get("fake_ext")), rw == rh, fw == fh)
+        groups.setdefault(key, []).append((row["generator"], rw, rh, fw, fh))
+
+    def _fmt(pairs: List[tuple]) -> str:
+        ws = [p[0] for p in pairs if p[0]]
+        hs = [p[1] for p in pairs if p[1]]
+        if not ws or not hs:
+            return "—"
+        same_w = min(ws) == max(ws)
+        same_h = min(hs) == max(hs)
+        if same_w and same_h and ws[0] == hs[0]:
+            return "%d×%d" % (ws[0], hs[0])
+        if ws == hs and min(ws) != max(ws):
+            return "%d–%d 方图" % (min(ws), max(ws))
+        w = str(ws[0]) if same_w else "%d–%d" % (min(ws), max(ws))
+        h = str(hs[0]) if same_h else "%d–%d" % (min(hs), max(hs))
+        return "%s×%s" % (w, h)
+
+    out = []
+    for key, members in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        rext, fext, rsq, fsq = key
+        gens = sorted(m[0] for m in members)
+        rsize = _fmt([(m[1], m[2]) for m in members]) + ("" if rsq else "·非方")
+        fsize = _fmt([(m[3], m[4]) for m in members]) + ("" if fsq else "·非方")
+        collinear = "是" if (rext != fext or rsize != fsize) else "否"
+        if len(gens) > 2:
+            names = "、".join(gens[:3]) + " 等 %d 个" % len(gens)
+        else:
+            names = "、".join(gens)
+        out.append([names, rext, fext, rsize, fsize, collinear])
+    return out
+
+
 def robust_rows() -> List[List[str]]:
     """按攻击聚合的鲁棒性矩阵（src/eval/robustness.py 写的 CSV）。"""
     if not os.path.isfile(ROBUST_CSV):
@@ -529,15 +713,32 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     p.paragraph_format.space_after = Pt(10)
     _styled_run(p, "图像处理与分析 · 期末项目报告 · 2026 秋季学期", 9, BODY_FONT)
 
+    p = add_body(doc, "**术语约定：** 本文说的“**失效**”不是“准确率下降”，而是一个操作化标准 —— "
+                      "判别器掉到**随机水平**（Acc≈50%、AUC≈50%），即所谓 collapse to chance。"
+                      "按这个定义，CNNSpot 在扩散模型上确实失效（50–60%），"
+                      "而 NPR 没有失效（本报告实测扩散组 Acc 75.68%），它只是**明显变弱**。"
+                      "标题里的“没有失效”就是这个意思；报告后文一旦说“变弱/掉点”都指相对下降，"
+                      "说“失效”都指塌到随机。", size=9.5, indent=True)
+    p.paragraph_format.space_after = Pt(6)
+
     sweep = load_sweep()
     measured = bool(sweep)
 
     # ---------------- 1. github ----------------
     add_section(doc, "1. GitHub 链接")
-    add_body(doc, "仓库地址：`https://github.com/lueg777/work_image`。本地已完成 `git init` 与首次"
-                  "提交（分支 `main`，31 个文件，工作区干净），`origin` 已指向该仓库；"
-                  "推上去之后此链接即为最终代码。若地址有变，改 `scripts/build_report.py` 里"
-                  "这一行后重跑即可，不必手工改 docx。")
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.first_line_indent = Cm(0.74)
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(3)
+    pf.line_spacing = 1.3
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    add_rich(p, "仓库地址：", size=10.5)
+    add_hyperlink(p, REPO_URL, REPO_URL, size=10)
+    add_rich(p, "。本地已完成 `git init` 与首次"
+                "提交（分支 `main`，32 个文件，工作区干净），`origin` 已指向该仓库；"
+                "推上去之后此链接即为最终代码。若地址有变，改 `scripts/build_report.py` 里"
+                "这一行后重跑即可，不必手工改 docx。")
     add_body(doc, "为保证评分时不依赖网络，提交包内 `3_可选附件或代码/aigc-freq-forensics/` "
                   "放置同一份代码快照（逐文件 SHA-1 比对一致）；两者如有差异，以 GitHub 为准。")
 
@@ -545,7 +746,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_section(doc, "2. 任务描述 你要做什么")
     add_body(doc, "生成式模型鉴伪的核心问题是**泛化**：在 ProGAN 上训练的分类器，遇到 StyleGAN、"
                   "ADM、Stable Diffusion 还能不能用。已有的实证很尖锐——CNNSpot（ResNet-50）在 "
-                  "16 个生成器上的平均准确率只有 70.78%，在扩散模型上基本等于抛硬币"
+                  "17 个生成器上的平均准确率只有 70.78%，在扩散模型上基本等于抛硬币"
                   "（ADM 60.39%、SDv1.4 50.57%、DALLE2 50.45%）；而 NPR（CVPR 2024，仅 1.44M 参数）"
                   "在同一张表上平均 91.7%，扩散模型上仍有 84.9%–99.6%。")
     add_body(doc, "NPR 的全部特殊之处，是把它输入分类器之前的图像换成了一个残差："
@@ -558,8 +759,8 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "而不是“提取了高频”这件事本身。两种可能的结果互相排斥：如果假设成立，把算子换成"
                   "插值核不匹配的高通（双线性、双三次、盒式）应当明显掉点；如果只是“需要高频”，"
                   "换成任何高通都应基本持平。")
-    add_body(doc, "做法：把前置算子抽象成可插拔的算子族（8 个，见第 4 节表 2），**同一份主干权重**下"
-                  "逐个替换并跨 16 个生成器评测，指标取 Acc 与 AP，并额外扫 JPEG 95/75/50 与 0.5× 缩放"
+    add_body(doc, "做法：把前置算子抽象成可插拔的算子族（8 个，见第 4 节表 3），**同一份主干权重**下"
+                  "逐个替换并跨 17 个生成器评测，指标取 Acc 与 AP，并额外扫 JPEG 95/75/50 与 0.5× 缩放"
                   "五种后处理，看掉点是否也随算子变化。产出是一张“算子 × 生成器”的表和一张鲁棒性矩阵，"
                   "而不是一次调参。")
     add_body(doc, "之所以把它当成图像处理题而不是模型题：整条链路里唯一被改动的是图像的频域/空间"
@@ -581,8 +782,9 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "不可达，所以本报告**不做任何重训练**，全部结论来自“同一套官方权重 + 换掉输入前的残差算子”"
                   "的评测。这一点直接决定了第 5 节的性质：它是机制探针，不是从头训练后的性能对比。")
     add_body(doc, "整理数据时踩到的坑，都写进了代码而不是记在脑子里：")
-    add_body(doc, "① **同一个包里混着两种层级**。17 个生成器里有 14 个是 `<生成器>/{0_real,1_fake}`，"
-                  "另 4 个多一层类别目录。只按“深度”写规则必然错一半，所以配对规则改成按名字判断："
+    add_body(doc, "① **同一个包里混着两种层级**。17 个生成器里有 13 个是 `<生成器>/{0_real,1_fake}`，"
+                  "另 4 个（ProGAN、CycleGAN、StyleGAN、StyleGAN2）多一层类别目录。只按“深度”写规则必然"
+                  "错一半，所以配对规则改成按名字判断："
                   "父目录名是已知生成器名就合并、子目录名是已知生成器名就不合并，两个都不是才退回按结构猜。")
     add_body(doc, "② **`ProGAN`、`StyleGAN` 这类名字本身“长得像 fake”**，按名字猜类会把一对生成器切成 "
                   "real/fake，整份测试集标签翻转却不报错。本项目的配对规则要求“恰好一个 real-like + "
@@ -598,10 +800,46 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                ["鲁棒性测试", "同上 × 5 种后处理", "17", "在线生成（JPEG 95/75/50、0.5× 缩放）"],
                ["基线权重", "官方 `NPR.pth`（NPR 仓库）", "—", "146/146 张量，1,437,761 参数"],
                ["训练 / 验证", "ForenSynths train/val", "ProGAN × 4 类", "未获取 ⇒ 本轮不重训"]],
-              widths_cm=[2.6, 5.2, 3.4, 3.4], size=8.5)
+              widths_cm=[2.4, 3.9, 2.5, 5.8], size=8.5)
     add_body(doc, "整理链条已脚本化：`download_data.py` 负责解压与摆位（同盘硬链接，不多占 34GB），"
                   "`prepare_data.py verify` 负责体检。摆位结果 `RESULT OK (17 generators, 76299 real / "
                   "76299 fake, 0 errors, 0 warnings)` 是本节所有数字成立的前提。", size=9.5)
+
+    # ---------------- 3.x the confound nobody mentions ----------------
+    profile = load_profile()
+    add_subsection(doc, "3.1 必须先说清的混杂：标签与容器格式、分辨率共线")
+    add_body(doc, "这是本报告最重要的一个自我限制，写在结果之前而不是藏在局限里。"
+                  "用 `scripts/profile_data.py` 把两侧的文件扩展名与尺寸统计出来后，"
+                  "发现数据集的构造方式让**标签与“容器格式 / 分辨率 / 重采样历史”在扩散子集里完全共线**：")
+    if profile:
+        add_caption(doc, "表 2　real / fake 两侧的容器格式与分辨率（`scripts/profile_data.py` 实测）")
+        add_table(doc, ["生成器", "real 容器", "fake 容器", "real 尺寸", "fake 尺寸", "标签与格式/尺寸共线"],
+                  profile_rows(profile),
+                  widths_cm=[3.9, 1.9, 1.9, 3.0, 2.4, 1.5], size=8.5)
+        add_body(doc, "读法：**9 个扩散生成器的 real 全是 JPEG、fake 全是 PNG，而且 real 是约 500×375 的"
+                      "非方图、fake 是 256²/512²/1024² 的方图** —— 在扩散子集里，"
+                      "“这是 fake”与“这是 PNG 且是方图”是同一件事。"
+                      "相比之下 7 个 GAN 生成器两侧都是 256² 的 PNG（WhichFaceIsReal 两侧都是 1024² JPEG），"
+                      "**GAN 子集没有这个混杂**。", size=10)
+        add_body(doc, "后果必须写在明面上：第 5 节的 “GAN 90.50 vs 扩散 75.68” **不能干净地归因于"
+                      "“生成器类型 / 上采样核差异”**，至少要先排除三个替代解释 —— "
+                      "① real 侧全是 JPEG，量化把高频抹平了一部分，而 fake 侧是 PNG 原图，"
+                      "模型可能只是在判“这张图是否被 JPEG 压过”；"
+                      "② 分辨率与方图/非方图差异改变了残差算子的响应尺度；"
+                      "③ 扩散子集的 real 来自 COCO 照片、GAN 子集的 real 来自 LSUN/FFHQ，"
+                      "**real 域本身就不一样**。按这个读法，扩散组的掉点至少有一部分来自源域而不是生成器。", size=10)
+        add_body(doc, "本报告对这条混杂的处理是**限定结论范围**而不是假装解决：凡是用到 GAN/扩散对比的地方，"
+                      "都限定为“在 AIGI_test 的这份构造下”的观测；"
+                      "把两侧统一到同一容器/分辨率后重跑，是下一步而不是本轮已完成的工作。"
+                      "另外做了两项**代价很小的旁证**："
+                      "① 第 5.4 节的算子消融在同一份数据上只换算子、不动数据，"
+                      "若掉点全来自源域混杂，那么“匹配核 vs 不匹配核”的 8.5–14.4 pp 差距不该出现；"
+                      "② 图 1 把两侧统一重采样到 256² 后比较径向功率谱，"
+                      "结果 fake 侧在高频并不占优（详见 5.1），说明“fake 残留上采样网格”这个最朴素的解释"
+                      "在全局径向统计上并不成立。这两条不能洗掉混杂，但能说明结论不只由混杂驱动。", size=10)
+    else:
+        add_body(doc, "`results/data_profile.csv` 尚未生成，跑 "
+                      "`python scripts/profile_data.py` 后本节表格自动填满。", size=9.5)
 
     # ---------------- 4. code changes ----------------
     add_section(doc, "4. 代码修改描述 你改了什么")
@@ -609,7 +847,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "一共七处改动，前两处是核心，第七处是真实数据逼出来的。")
     add_body(doc, "**改动 1：把写死的高通算子抽成可插拔算子族。** 上游在 `networks/resnet.py` 里把 "
                   "nearest 往返残差直接写在 `forward()` 中，无法替换。本项目新增 `src/ops/residual_ops.py`，"
-                  "定义 `ResidualOp` 基类与 8 个实现（表 2），模型通过 `op=` 参数注入，`make_residual_op()` "
+                  "定义 `ResidualOp` 基类与 8 个实现（表 3），模型通过 `op=` 参数注入，`make_residual_op()` "
                   "统一构造。算子内部的 DCT 基矩阵与掩膜用 `register_buffer(..., persistent=False)`，"
                   "保证 `state_dict` 里不出现 `op.*` 键——否则官方 `NPR.pth` 直接加载失败（missing/unexpected 各一堆）。")
     add_body(doc, "**改动 2：按官方裁剪结构自实现 ResNet，而不是 import torchvision。** 官方网络只保留到 "
@@ -644,7 +882,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "两个只在 34GB 数据上才会出现的故障：按 batch 截断时只截到一类样本（AUC 变 `nan`），"
                   "改成**每类各截 N 张**；一个尾部缺字节的 JPEG 让整轮 18 分钟评测崩掉，改为显式允许"
                   "PIL 补齐，且报错必须带出文件名。")
-    add_caption(doc, "表 2　算子族（同一主干，只换输入前的残差算子）")
+    add_caption(doc, "表 3　算子族（同一主干，只换输入前的残差算子）")
     add_table(doc, ["算子", "如何得到残差", "角色"],
               [[n, d, r] for n, d, r in OPERATORS],
               widths_cm=[2.8, 7.4, 4.4], size=8.5, keep_together=True)
@@ -659,7 +897,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "**论文值**（别人的，仅作对照）、**代码级验证**（不依赖数据集的自检）。"
                   "所有实测都在同一套官方权重 `NPR.pth` 上完成，指标一律报 Acc/AUC/AP 三项："
                   "只报 Acc 会把“阈值没校准”和“排序能力差”混为一谈，而这两件事的修法完全不同。")
-    add_caption(doc, "表 3　代码级验证（不依赖数据集）")
+    add_caption(doc, "表 4　代码级验证（不依赖数据集）")
     add_table(doc, ["检查项", "结果", "含义"],
               [["自检通过率", "70 / 70", "指标、频谱、数据整理、算子与模型四段全过（缺 torch 时算子/模型段明确 SKIP，其余 44 项仍须全过）"],
                ["参数量", "1,437,761", "与论文 1.44M 一致，证明裁剪结构复现正确"],
@@ -670,33 +908,65 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                ["数据摆位", "17 生成器 / 76,299 + 76,299", "`verify` 报 0 error、0 warning"]],
               widths_cm=[4.3, 3.9, 6.4], size=8.5)
 
-    add_body(doc, "**5.1 基线复现。** 官方 `NPR.pth` 在本项目整理出的 17 个生成器上逐生成器评测，"
+    add_subsection(doc, "5.1 基线复现")
+    add_body(doc, "官方 `NPR.pth` 在本项目整理出的 17 个生成器上逐生成器评测，"
                   "与论文同一张表的数值并排放在一起（论文用的是 ForenSynths 版测试集，两个集合不完全相同，"
                   "所以这里的“论文 NPR”一列只作量级对照）。")
-    add_caption(doc, "表 4　本报告实测：17 个生成器（官方 NPR.pth，Resize(256) 不裁剪，0 阈值）")
+    add_caption(doc, "表 5　本报告实测：17 个生成器（官方 NPR.pth，Resize(256) 不裁剪，0 阈值）")
     add_table(doc, ["生成器", "Acc", "AUC", "AP", "论文 NPR", "Δ Acc"], baseline_rows(base_rows),
               widths_cm=[4.2, 1.8, 1.8, 1.8, 2.0, 1.8], size=8.0)
     if base_summary:
+        calib = load_calibration()
         add_body(doc, f"全部 17 个生成器平均 **Acc {100 * base_summary['mean_acc']:.2f} / "
                       f"AUC {100 * base_summary['mean_auc']:.2f} / AP {100 * base_summary['mean_ap']:.2f}**；"
                       f"其中 8 个 GAN 平均 Acc {100 * base_summary['gan_mean_acc']:.2f}，"
                       f"9 个扩散模型平均 Acc {100 * base_summary['diffusion_mean_acc']:.2f}。"
-                      f"三个读数要分开看：① 论文报的平均 Acc 是 91.7，我们低约 9 pp；"
-                      f"但 **AUC 92.41 与论文同档** —— AUC/AP 只依赖排序，说明“哪个像假”的判断力是复现出来的，"
-                      f"差的 9 pp 出在 0 阈值未校准（分数整体偏移一个偏置，官方权重自带 bias，"
-                      f"直接拿 0 当阈值就会系统性偏一边）；② 复现出论文的核心现象："
-                      f"GAN 组比扩散组高 {100 * base_summary['gan_mean_acc'] - 100 * base_summary['diffusion_mean_acc']:.2f} pp，"
-                      f"方向与论文一致，这才是本项目的论证基础；③ 最弱的是 DALLE2（64.90）与 "
-                      f"WhichFaceIsReal（65.80，AUC 仅 71.5），前者与论文里 DALLE2 表现好相左，"
-                      f"说明两个测试集的 DALLE2 子集并非同一批图，这一点本报告不做进一步归因。")
+                      f"两个读数要分开看：① **AUC/AP 只依赖排序**，92.41 说明“哪个更像假”的判断力是复现出来的；"
+                      f"论文报的 91.7 是 **Acc**，而且是在 ForenSynths 的 16 生成器表上，"
+                      f"与本报告的 17 生成器 / AIGI_test 不是同一张表，两个数字不能直接相减。")
+        if calib and calib.get("global"):
+            g = calib["global"]
+            add_body(doc, "② **阈值偏移到底贡献了多少：这是测出来的，不是推出来的。** "
+                          f"把每个生成器的真假两半各自随机对半分（调阈值 / 评估互不重叠，种子 70），"
+                          f"调出一个全体共用阈值 {g['threshold']:+.2f} 后，留在评估半边上的 "
+                          f"Acc 从 **{g['acc_thr0']:.2f} 升到 {g['acc_tuned']:.2f}（{g['gain']:+.2f} pp）**，"
+                          f"AUC {g['auc']:.2f}。若按生成器各自调阈值（部署时用不上，因为要预知来源），"
+                          f"上界是 {calib['groups']['all']['acc_tuned']:.2f}（+{calib['groups']['all']['gain']:.2f} pp）。"
+                          "所以：**阈值偏移能解释约 2 pp，不是 9 pp**；剩下的差距主要来自测试集不同"
+                          "（AIGI_test 的 fake 覆盖 9 种扩散模型，含 1024² 与 COCO 源域），"
+                          "以及本报告只做评测不做重训。")
+        add_body(doc, "③ **扩散组的掉点是真实的，但归因要留口子**：本报告确实复现出 GAN 组比扩散组高 "
+                      f"{100 * base_summary['gan_mean_acc'] - 100 * base_summary['diffusion_mean_acc']:.2f} pp，"
+                      "方向与论文一致；不过第 3.1 节已经说明，这份数据的标签与容器格式/分辨率共线，"
+                      "所以这一差距**不能全部记在“生成器类型”账上**。"
+                      "④ 最弱的是 DALLE2（64.90）与 WhichFaceIsReal（65.80，AUC 仅 71.5），"
+                      "前者与论文里 DALLE2 表现最好相左，说明两个测试集的 DALLE2 子集并非同一批图，"
+                      "这一点本报告不做进一步归因。")
+
+        add_body(doc, "**残差算子看到的是什么：径向功率谱。** 图 1 把两侧统一重采样到 256² 后比较频谱"
+                      "（不重采样则主要测的是分辨率差，而分辨率与标签共线，见 3.1）。"
+                      "左图是四个平均功率谱，右图把 fake−real 的差值单独画出来：")
+        add_figure(doc, FIG_SPECTRUM,
+                   "图 1　径向功率谱（Azimuthal 平均，680 张图）。左：GAN/扩散 × real/fake 四条平均曲线；"
+                   "右：fake − real 的差值，0 线以上表示 fake 的高频更强。"
+                   "所有图先 bicubic 重采样到 256²，否则测的是分辨率而不是内容。", width_cm=15.2)
+        add_body(doc, "读图要点，也是本项目修改过的判断：**fake 侧在高频并不占优**。"
+                      "扩散组在 r<0.12 处 fake 略高（合成图的低频更“整”），"
+                      "到了中高频反而低于 real；GAN 组整段略低于 real。"
+                      "如果 NPR 的增益来自“抓住 fake 残留的上采样网格”，"
+                      "那么在全局径向统计上应当看到 fake 侧中高频抬升 —— 实际没有。"
+                      "所以更合理的读法是：**残差算子提供的是局部相位/网格结构，"
+                      "而不是全局径向能量**；这也解释了为什么 5.4 节里同样是高通的 laplacian 只能拿回一部分差距，"
+                      "以及为什么一张 8×8 分块 DCT 反而排在插值族之上。", size=10)
     else:
-        add_body(doc, "基线尚未运行，表 4 留空。跑 `python -m src.test --ckpt database/weights/NPR.pth "
+        add_body(doc, "基线尚未运行，表 5 留空。跑 `python -m src.test --ckpt database/weights/NPR.pth "
                       "--op npr_nearest --cross --limit-per-class 300 --workers 0` 后本表自动填满。", size=9.5)
 
-    add_body(doc, "**5.2 预处理口径的影响。** 论文的 `testmodel()` 用 Resize(256) **不裁剪**，"
+    add_subsection(doc, "5.2 预处理口径的影响")
+    add_body(doc, "论文的 `testmodel()` 用 Resize(256) **不裁剪**，"
                   "而项目默认配置是 224 中心裁剪 —— 这个差别看着小，会让同一套权重差出 1 pp 以上。"
                   "两种口径都完整跑了 152,598 张，结果如下。")
-    add_caption(doc, "表 5　预处理口径对比（同一套官方权重、同一测试集）")
+    add_caption(doc, "表 6　预处理口径对比（同一套官方权重、同一测试集）")
     add_table(doc, ["口径", "均值 Acc", "均值 AUC", "均值 AP", "GAN Acc", "扩散 Acc"], protocols,
               widths_cm=[4.0, 2.0, 2.0, 2.0, 2.3, 2.3], size=8.5, keep_together=True)
     if len(protocols) >= 2 and protocols[1][1] != "待补":
@@ -708,10 +978,11 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                       "**因此本报告此后所有数字统一用 256 不裁剪口径**，项目里也新增了 "
                       "`configs/eval_256_nocrop.yaml` 把这件事固定下来。")
     else:
-        add_body(doc, "口径对比尚未跑完，表 5 留空。", size=9.5)
+        add_body(doc, "口径对比尚未跑完，表 6 留空。", size=9.5)
 
-    add_body(doc, "**5.3 论文对照。** 下表是论文原表的数值，只用来标定“差多少算多”，不是本项目的实测。")
-    add_caption(doc, "表 6　论文值（对照基线，非本项目实测，Acc %）")
+    add_subsection(doc, "5.3 论文对照")
+    add_body(doc, "下表是论文原表的数值，只用来标定“差多少算多”，不是本项目的实测。")
+    add_caption(doc, "表 7　论文值（对照基线，非本项目实测，Acc %）")
     order = ["ProGAN", "StyleGAN", "StyleGAN2", "BigGAN", "CycleGAN", "StarGAN", "GauGAN", "WFIR",
              "ADM", "Glide", "Midjourney", "SDv1.4", "SDv1.5", "VQDM", "Wukong", "DALLE2"]
     add_table(doc, ["生成器", "NPR", "CNNSpot", "生成器", "NPR", "CNNSpot"],
@@ -725,15 +996,17 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "差别全部集中在输入前那一步残差 —— 于是问题变成：那一步残差到底提供了什么。",
              size=9.5)
 
-    add_body(doc, "**5.4 算子族消融（核心实验）。** 同一套权重，只把输入前的残差算子换掉，重跑全部 17 个生成器。"
+    add_subsection(doc, "5.4 算子族消融（核心实验）")
+    add_body(doc, "同一套权重，只把输入前的残差算子换掉，重跑全部 17 个生成器。"
                   "预期列在跑之前就写死，不是事后解释。")
-    add_caption(doc, "表 7　算子族消融：预注册预期 vs 实测（%，每个算子 17 生成器 × 每类 300 张）")
+    add_caption(doc, "表 8　算子族消融：预注册预期 vs 实测（%，每个算子 17 生成器 × 每类 300 张）")
     add_table(doc, ["算子", "预期", "机制依据", "Acc（Δ）", "AUC", "AP"], sweep_rows(sweep),
               widths_cm=[2.5, 1.5, 5.3, 1.5, 2.3, 1.5], size=8.0)
     verdict = ablation_verdict(sweep)
     if verdict:
         add_body(doc, verdict)
-        add_body(doc, "**为什么表 7 的 Acc 一栏全塌到 50% 附近、而 AUC 还有 78–92。** 换算子等于换掉了 "
+        add_body(doc, "**为什么除 `npr_nearest` 外，表 8 的 Acc 一栏都塌到 50% 附近、而 AUC 还有 52–84。** "
+                      "换算子等于换掉了 "
                       "`conv1` 的输入：官方权重只见过 nearest 残差的数值尺度，换个算子后整体分数偏移，"
                       "0 阈值立刻失效，Acc 全部掉到抛硬币水平。这正是探针的已知代价，也说明读数只能看 "
                       "AUC/AP。反过来说，若连 AUC 都保留，说明**排序能力**没有丢——所以这里的分歧是真分歧，"
@@ -746,6 +1019,10 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                       "局部相位，网格谐波被一并抹掉——这一条恰好与“核匹配”假设同向。"
                       "④ `laplacian` 只比 `npr_nearest` 低 8.5 pp，说明 nearest 的优势是**加成**，"
                       "不是“高通与否”的分水岭；把话说满会失真。", size=9.5)
+        add_figure(doc, FIG_ABLATION,
+                   "图 2　算子族消融（同一套官方权重，17 生成器 × 每类 300 张）。纵轴 AUC，"
+                   "括号内为相对 `npr_nearest` 的差值；红色虚线是随机水平。"
+                   "颜色按机制分组：匹配核 / 插值族 / 纯高通 / 对照组。", width_cm=14.6)
     else:
         add_body(doc, "实测列尚未填满（`待补`），跑 `python -m src.sweep --mode pretrained "
                       "--ckpt database/weights/NPR.pth --ops all` 后本表与上面的判定句会自动生成。", size=9.5)
@@ -756,9 +1033,12 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
              size=9.5)
 
     if robust:
-        add_body(doc, "**5.5 鲁棒性。** 取证模型在社交平台上遇到的第一件事是 JPEG 重压缩与缩放。"
-                      "下表在测试时在线生成 5 种后处理，逐一重跑（每类限量以控制时间）。")
-        add_caption(doc, "表 8　鲁棒性：同一权重的 17 生成器均值")
+        add_subsection(doc, "5.5 鲁棒性")
+        add_body(doc, "取证模型在社交平台上遇到的第一件事是 JPEG 重压缩与缩放。"
+                      "下表在测试时在线生成 5 种后处理，逐一重跑；为控制时间每类只取 100 张，"
+                      "所以每档 n=200/生成器 —— 无后处理那一档的 82.53 与 5.1 节全量 82.65 的差"
+                      "就来自这个子集，不是异常。")
+        add_caption(doc, "表 9　鲁棒性：同一权重的 17 生成器均值")
         add_table(doc, ["后处理", "均值 Acc", "Δ Acc", "均值 AUC"], robust,
                   widths_cm=[4.0, 3.0, 3.0, 3.0], size=8.5, keep_together=True)
         add_body(doc, "读法：这里的结论是**负面且明确**的 —— 无后处理时均值 AUC 92.75，只要过一次 "
@@ -769,9 +1049,27 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                       "（那需要重训验证）。另一个细节值得记：JPEG 的破坏力大于缩放，说明判别信息挂在"
                       "**精细的网格结构**上——重采样改变网格周期但保留其存在，JPEG 的 DCT 量化则直接抹掉"
                       "高频系数。这与 5.4 的“核匹配”解释互相支持。", size=9.5)
+        add_figure(doc, FIG_ROBUST,
+                   "图 3　鲁棒性（同一套权重，17 生成器均值，每类 100 张）。纵轴 AUC，"
+                   "红色虚线是随机水平；除“无后处理”外的四档全部低于或贴近随机，"
+                   "其中 JPEG 档低于 50% 说明分数被系统性翻向。", width_cm=12.4)
     else:
-        add_body(doc, "**5.5 鲁棒性（待补）。** 运行 `python -m src.test --ckpt database/weights/NPR.pth "
+        add_subsection(doc, "5.5 鲁棒性（待补）")
+    add_body(doc, "运行 `python -m src.test --ckpt database/weights/NPR.pth "
                       "--robustness --limit-per-class 200 --workers 0` 后本节自动生成表格。", size=9.5)
+
+    # ---------------- 6. references ----------------
+    add_section(doc, "6. 参考文献")
+    for item in REFERENCES:
+        p = doc.add_paragraph()
+        pf = p.paragraph_format
+        pf.left_indent = Cm(0.75)
+        pf.first_line_indent = Cm(-0.75)
+        pf.space_before = Pt(0)
+        pf.space_after = Pt(2)
+        pf.line_spacing = 1.2
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        add_rich(p, item, size=9)
 
     # ---------------- closing ----------------
     add_body(doc, "**小结。** 本项目交出的不是“比 SOTA 高 X%”，而是：一套可复用的实验框架 + 一条可证伪的"
@@ -789,7 +1087,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_body(doc, "**下一步按顺序做四件事**：① 补下载 ForenSynths train/val（约 30GB，Google Drive），"
                   "`prepare_data.py organize` 摆好并 `verify --leakage-with` 查重；② 用官方 `NPR.pth` "
                   "微调/复现训练流程，确认训练侧也能到 90% 量级；③ `--mode scratch` 对 8 个算子逐一从头"
-                  "训练，把表 7 换成正经的性能对比；④ 顺手校准阈值（在验证集上搜最优阈值），"
+                  "训练，把表 8 换成正经的性能对比；④ 顺手校准阈值（在验证集上搜最优阈值），"
                   "让 Acc 与 AUC 不再自相矛盾，最后 `build_report.py` 重出本报告。")
 
     if dry_run:

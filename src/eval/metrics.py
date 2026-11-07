@@ -120,16 +120,40 @@ def accuracy_at_fpr(labels, scores, fpr_target: float = 0.05) -> float:
 
 
 def best_threshold_accuracy(labels, scores) -> float:
-    """Maximum accuracy over all thresholds (an oracle upper bound)."""
+    """Maximum accuracy over all thresholds (an oracle upper bound).
+
+    Punctuation this is the number you would get if you were allowed to pick the
+    threshold with the labels in hand, so it is only useful as a ceiling. A clean
+    number has to be obtained by tuning on one split and evaluating on another
+    (see ``scripts/calibrate_threshold.py``).
+    """
     y = _as_1d(labels).astype(np.int64)
     s = _as_1d(scores)
+    n = y.size
+    if n == 0:
+        return float("nan")
+    n_pos = int(y.sum())
+    n_neg = n - n_pos
+
     order = np.argsort(-s, kind="mergesort")
     y_sorted = y[order]
-    n = y.size
+    s_sorted = s[order]
     tp = np.cumsum(y_sorted == 1)
-    fp = np.cumsum(y_sorted == 0)
-    correct = tp + (n - np.arange(1, n + 1) - fp)
-    return float(correct.max() / n)
+    pred_pos = np.arange(1, n + 1)
+    # predictions: the top-k scores are called fake, everything else real.
+    # tp = true positives above the cut, fn = n_pos - tp,
+    # fp = k - tp, tn = n_neg - fp = n_neg - (k - tp).
+    fn = n_pos - tp
+    tn = n_neg - (pred_pos - tp)
+    correct = tp + tn
+    # A cut is only realisable if it does not split a group of tied scores --
+    # otherwise we would credit a threshold the model can never actually apply.
+    valid = np.ones(n, dtype=bool)
+    valid[:-1] = s_sorted[1:] != s_sorted[:-1]
+    # k = 0 (everything predicted real) is a legal threshold too
+    best = max(float(n_neg), float(correct[valid].max()))
+    _ = fn  # kept for symmetry with tp; not needed for the accuracy
+    return float(best / n)
 
 
 def binary_metrics(labels, scores, threshold: float = 0.5) -> Dict[str, float]:

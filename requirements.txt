@@ -1,5 +1,6 @@
-# Python >= 3.9 recommended. Tested target: torch 2.x + CUDA (RTX 3060/4060 8GB).
-# The official NPR release was built on torch 1.8; we only need torch>=1.10 APIs.
+# Python >= 3.9 recommended. Tested on Python 3.13.2 + torch 2.8.0+cu129 (RTX 4060 Laptop 8GB)
+# and on Python 3.12 + CPU torch 2.15.0+cpu. The official NPR release was built on torch 1.8;
+# this project only needs torch>=1.10 APIs.
 torch>=1.10
 torchvision>=0.11
 numpy>=1.21
@@ -7,5 +8,10 @@ Pillow>=9.0
 PyYAML>=6.0
 tqdm>=4.62
 
-# Optional (only for scripts/make_report_figures.py)
+# Optional: downloading the official datasets/weights without a browser.
+# scripts/download_data.py uses it when available, and falls back to --local-dir.
+gdown>=4.7.1
+
+# Optional: scripts/make_report_figures.py (3 figures in the report),
+# scripts/profile_data.py and scripts/calibrate_threshold.py need nothing extra.
 matplotlib>=3.5

@@ -105,10 +105,11 @@ def build_eval_loader(
     cfg: dict,
     degradation: Optional[dict] = None,
     batch_size: Optional[int] = None,
+    limit_per_class: Optional[int] = None,
 ) -> Tuple[DataLoader, BinaryForensicsDataset]:
     """Evaluation loader for one ``<generator>/{real,fake}`` folder pair."""
     data_cfg = cfg.get("data", {})
-    limit = data_cfg.get("eval_limit_per_class")
+    limit = limit_per_class if limit_per_class is not None else data_cfg.get("eval_limit_per_class")
     dset = BinaryForensicsDataset(root, build_eval_transform(cfg, degradation),
                                  limit_per_class=int(limit) if limit else None)
     return DataLoader(dset, **_loader_kwargs(cfg, train=False,
