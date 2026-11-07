@@ -1,0 +1,50 @@
+# Default configuration.
+#
+# Paths are resolved relative to the repo root (the directory containing
+# `src/`), not the current working directory.
+
+# Residual operator fed to conv1. One of:
+#   identity, npr_nearest, npr_bilinear, npr_bicubic, npr_box,
+#   laplacian, dct_lowpass, fft_radial
+op: npr_nearest
+
+data:
+  # Training split: <train_root>/<generator>/{real,fake}/
+  # ForenSynths gives 4 families: car, cat, chair, horse.
+  train_root: datasets/ForenSynths_train_val/train
+  val_root: datasets/ForenSynths_train_val/val
+
+  # Evaluation root: <test_root>/<generator>/{real,fake}/
+  test_root: datasets/Generalization_Test
+
+  crop_size: 224          # official NPR cropSize
+  load_size: 256          # official NPR loadSize
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  flip: true
+
+  # "resize" = official; "translate_duplicate" = GenImage-style tiling
+  resize_mode: resize
+
+  # Official test-time escape hatches, both false in the default recipe.
+  # NOTE: NPR's in-training testmodel() sets no_crop=True and no_resize=False,
+  # i.e. it evaluates on the whole 256x256 resize. Set eval_no_crop: true to
+  # reproduce that; the reported table numbers come from their test script and
+  # which of the two transforms it used is UNVERIFIED.
+  eval_no_crop: false
+  eval_no_resize: false
+
+  # Where attacks are applied: "after_resize" matches CNNDetection's
+  # resize -> augment -> crop composition.
+  degradation_stage: after_resize
+
+model:
+  layers: [3, 4]      # gives the 1.44M-parameter NPR configuration
+  num_classes: 1      # single logit, trained with BCEWithLogitsLoss
+  op_kwargs: {}       # e.g. {keep_ratio: 0.35} / {cutoff: 0.15}
+
+train:
+  epochs: 50
+  lr: 0.0002
+  delr_freq: 10       # divide LR by 10 every N epochs

@@ -1,0 +1,31 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# data and checkpoints: never commit these
+# NOTE: "/data/" is anchored on purpose -- a bare "data/" also matches src/data/,
+# which silently dropped the entire data layer from the first commit attempt.
+datasets/
+/data/
+*.pth
+*.pt
+*.ckpt
+
+# run artifacts
+runs/
+outputs/
+*.log
+
+# local-only scratch: vendored torch for smoke-testing on a torch-less box
+_vendor/
+_tmp/
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

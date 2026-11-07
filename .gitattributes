@@ -1,0 +1,5 @@
+# keep the repo LF even though Windows checkout uses CRLF
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pth binary

@@ -1,0 +1,66 @@
+# Operator-family declarations used by the docs and by src/sweep.py.
+#
+# `group` records WHY each operator is in the experiment:
+#   match    -- a round trip whose interpolation mode is (or is not) the one
+#               decoders typically use; these test the operator-matching
+#               hypothesis directly.
+#   highpass -- a classical high-pass filter; these test the weaker
+#               "any high-pass works" hypothesis.
+#   control  -- baselines needed to attribute the result.
+
+operators:
+  npr_nearest:
+    group: match
+    scale: 0.6666666667
+    kwargs: {}
+    note: "official NPR. nearest 2x down/up round trip."
+
+  npr_bilinear:
+    group: match
+    scale: 0.6666666667
+    kwargs: {}
+    note: "same round trip, bilinear. Expected to hurt if kernel identity matters."
+
+  npr_bicubic:
+    group: match
+    scale: 0.6666666667
+    kwargs: {}
+    note: "same round trip, bicubic."
+
+  npr_box:
+    group: match
+    scale: 0.6666666667
+    kwargs: {}
+    note: "2x2 average pooling + nearest up. Isolates point sampling from anti-aliasing."
+
+  laplacian:
+    group: highpass
+    scale: 1.0
+    kwargs: {}
+    note: "x - GaussianBlur(x), sigma=1. The textbook high-pass."
+
+  dct_lowpass:
+    group: highpass
+    scale: 1.0
+    kwargs: {block: 8, keep_ratio: 0.35}
+    note: "removes radial low band of the 8x8 block DCT."
+
+  fft_radial:
+    group: highpass
+    scale: 1.0
+    kwargs: {cutoff: 0.15}
+    note: "removes radial low band of the 2D DFT."
+
+  identity:
+    group: control
+    scale: 1.0
+    kwargs: {}
+    note: "no high-pass. Attributes how much the operator contributes at all."
+
+# Note on magnitudes: the dct_lowpass / fft_radial / laplacian residuals have a
+# smaller L2 norm than the 2/3-scaled nearest residual, so a raw comparison
+# confounds "different operator" with "smaller input". If a run shows those ops
+# collapsing, measure the residual std on a real batch first and, if it differs
+# by more than ~2x, re-run with a rescaling factor recorded in the report.
+# UNVERIFIED: the exact per-operator rescaling needed for a norm-matched
+# comparison has not been measured yet.
