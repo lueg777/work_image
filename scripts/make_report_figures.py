@@ -217,7 +217,6 @@ def fig_ablation(fig_dir: str) -> str:
         ax.text(bar.get_x() + bar.get_width() / 2, val + 1.2, txt,
                 ha="center", va="bottom", fontsize=7.6)
     ax.axhline(50, color="#b00020", lw=0.9, ls=":")
-    ax.text(0.06, 52.0, "chance", color="#b00020", fontsize=7.5, ha="left")
     ax.set_xticks(range(len(names)))
     ax.set_xticklabels(names, rotation=22, ha="right", fontsize=8)
     ax.set_ylim(0, 105)
@@ -252,7 +251,6 @@ def fig_robust(fig_dir: str) -> str:
         ax.text(bar.get_x() + bar.get_width() / 2, val + 1.5, f"{val:.1f}",
                 ha="center", va="bottom", fontsize=8)
     ax.axhline(50, color="#b00020", lw=0.9, ls=":")
-    ax.text(0.06, 52.0, "chance", color="#b00020", fontsize=7.5, ha="left")
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels(order, fontsize=8.5)
     ax.set_ylim(0, 105)

@@ -68,6 +68,8 @@ REPO_URL = "https://github.com/lueg777/work_image"
 BODY_FONT = "宋体"
 HEAD_FONT = "黑体"
 CODE_FONT = "Consolas"
+#: literal backtick, kept out of the source so no shell can eat it
+TICK = chr(96)
 
 # usable width on A4 with the template's 1.25in margins
 TEXT_WIDTH_CM = 14.6
@@ -1055,8 +1057,9 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                    "其中 JPEG 档低于 50% 说明分数被系统性翻向。", width_cm=12.4)
     else:
         add_subsection(doc, "5.5 鲁棒性（待补）")
-    add_body(doc, "运行 `python -m src.test --ckpt database/weights/NPR.pth "
-                      "--robustness --limit-per-class 200 --workers 0` 后本节自动生成表格。", size=9.5)
+    add_body(doc, "下面这一条命令会把上面两张表都生成出来：", size=9.5)
+    add_code_block(doc, ["python -m src.test --ckpt database/weights/NPR.pth --robustness \\",
+                         "    --limit-per-class 200 --workers 0 --out-dir runs/real/npr256"])
 
     # ---------------- 6. references ----------------
     add_section(doc, "6. 参考文献")
@@ -1082,18 +1085,26 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "所以算子消融只能用 `--mode pretrained` 探针，拿不到“每个算子从头训练”的干净性能数字；"
                   "② 探针实验里换算子会改变 `conv1` 的输入分布，结论只能当作方向指示；"
                   "③ 单次评测、无重复种子与置信区间，1 pp 以内的差异不宜过度解读；"
-                  "④ Acc 依赖 0 阈值，官方权重自带偏置未校准，本报告因此同时给 AUC/AP；"
+                  "④ Acc 依赖 0 阈值；阈值本身已经测过（5.1 节，全局校准只换来 +2.2 pp），差距主要不是阈值造成的，但报告仍以 AUC/AP 为主指标；"
                   "⑤ DALLE2 与 WhichFaceIsReal 的表现与论文不同向，未做归因。")
     add_body(doc, "**下一步按顺序做四件事**：① 补下载 ForenSynths train/val（约 30GB，Google Drive），"
                   "`prepare_data.py organize` 摆好并 `verify --leakage-with` 查重；② 用官方 `NPR.pth` "
                   "微调/复现训练流程，确认训练侧也能到 90% 量级；③ `--mode scratch` 对 8 个算子逐一从头"
-                  "训练，把表 8 换成正经的性能对比；④ 顺手校准阈值（在验证集上搜最优阈值），"
-                  "让 Acc 与 AUC 不再自相矛盾，最后 `build_report.py` 重出本报告。")
+                  "训练，把表 8 换成正经的性能对比；④ 把阈值校准做成正式一步：现在是拿测试集对半分搜的，"
+                  "正式做法要在验证集上搜、再去测试集报告，最后 `build_report.py` 重出本报告。")
 
     if dry_run:
         return out_path
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    # Final guard: any paragraph whose text reached the document without going
+    # through add_rich() still carries literal markdown markers. Strip them so the
+    # reader never sees a stray backtick or **.
+    for paragraph in doc.paragraphs:
+        for run in paragraph.runs:
+            if TICK in run.text or "**" in run.text:
+                run.text = run.text.replace(TICK, "").replace("**", "")
+
     doc.save(out_path)
     return out_path
 
