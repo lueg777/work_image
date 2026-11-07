@@ -70,7 +70,7 @@ aigc-freq-forensics/
 ├── docs/
 │   └── plan.md                 # 实验矩阵、四周计划、决策日志、风险
 ├── scripts/
-│   ├── smoke_test.py           # 无数据集自检（70 项）
+│   ├── smoke_test.py           # 无数据集自检（74 项）
 │   ├── prepare_data.py         # organize / verify / manifest（torch-free）
 │   ├── download_data.py        # 下载 → 解压 → 摆位 → 体检，一条命令
 │   ├── profile_data.py         # 统计两侧容器格式/分辨率 → results/data_profile.csv
@@ -122,7 +122,7 @@ python scripts/smoke_test.py            # 无 torch 时自动跳过 torch 段
 python scripts/smoke_test.py --require-torch   # 有 torch 时要求全过
 ```
 
-已实测：**70 项全过**（2026-11-03，CPU torch 2.15.0+cpu）：
+已实测：**74 项全过**（2026-11-03，CPU torch 2.15.0+cpu）：
 
 | 段 | 项数 | 覆盖内容 |
 |---|---|---|
@@ -272,12 +272,13 @@ python scripts/build_report.py                  # 写 【图像处理】-0123456
 python scripts/build_report.py --dry-run        # 只打印路径，不落盘
 ```
 
-报告由模板复制而来（保留老师给的前四个段落），正文、五张表全部由脚本决定，所以：
+报告由模板复制而来（保留老师给的前四个段落）。**9 张表和三张图完全由脚本生成**，正文里的关键数字（均值、差值、校准结果、逐生成器最差值）也从结果文件读，但叙述性文字仍是手写的 —— 结果重跑后正文需要人再看一眼，不是全自动。所以：
 
 - **幂等**：重复运行会先清空正文与表格再重写，不会叠出第二份；
-- **数据驱动**：读 `runs/sweep/summary.json` / `cross_all_ops.csv` 填表 5 的实测两列，
+- **数据驱动**：表 5/8/9 读 `runs/real/*.json` 与 `runs/sweep/`，3.1 的表读
+  `results/data_profile.csv`，5.1 的校准段落读 `results/calibration_summary.json`；
   没有结果时写 `待补`，绝不填论文值或合成数据；
-- **预注册**：表 5 的"预期 / 机制依据"两列来自脚本里的 `EXPECTED` 字典，写在跑实验之前，
+- **预注册**：表 8 的"预期 / 机制依据"两列来自脚本里的 `EXPECTED` 字典，写在跑实验之前，
   避免"看完结果再解释"。
 
 ### 5.7 本机已跑出的真实结果（2026-11-07，官方 `NPR.pth`）
@@ -298,17 +299,26 @@ python -m src.test --config configs/eval_256_nocrop.yaml \
 
 怎么读这三个数：
 
-- **AUC 92.4 与论文同档**，说明"判断谁像假"的能力复现出来了；论文报的 91.7 是 **Acc**，
-  而我们 Acc 低约 9 pp —— 差别出在 0 阈值没校准（官方权重自带偏置），不是排序能力差。
-  所以本项目一律同时报 Acc/AUC/AP，只报 Acc 会把这两件事混为一谈。
+- **AUC 92.4 说明"判断谁像假"的排序能力复现出来了**；论文报的 91.7 是 **Acc**，而且是在
+  ForenSynths 的 16 生成器表上，与本报告的 17 生成器 / AIGI_test 不是同一张表，不能直接相减。
+- **阈值偏移只解释 2.16 pp**（实测，见下）：全体共用一个调过的阈值（`thr=+8.48`）时
+  评估半边 Acc 82.43 → 84.59；按生成器各自调阈值（部署时用不上）上界 87.08。
+  两张表总差约 9 pp，其余约 6.9 pp 可能来自测试集构成、源域差异或"只评测不重训"，
+  本报告不做进一步归因。所以本项目一律同时报 Acc/AUC/AP。
 - **GAN 90.5 vs 扩散 75.7（差 14.8 pp）** 与论文同向，这是整个项目的论证基础。
 - **不裁剪比裁剪好 0.86 pp Acc / 1.11 pp AUC**：裁剪会切掉图像边缘的上采样伪影，
   而这类伪影恰好是判别信息的主要来源之一。项目因此固定 `configs/eval_256_nocrop.yaml`。
 
-调阈值只需一次扫描（在验证集或测试集上搜使 Acc 最大的阈值）：
+阈值校准脚本（每个生成器按类对半分，一半搜阈值、一半报数）：
+
+```bash
+python scripts/calibrate_threshold.py --limit-per-class 300 --workers 0
+```
+
+也可以在代码里直接调（结果写入 `results/calibration_summary.json`）：
 
 ```python
-from src.eval.metrics import best_threshold_accuracy   # 返回 (best_acc, best_thr)
+from src.eval.metrics import best_threshold_accuracy   # 返回最优准确率（float）
 ```
 
 **算子族消融（同一权重，17 生成器 × 每类 300 张）**：
@@ -368,7 +378,7 @@ CNNSpot 那一行是本项目最有力的动机证据：**在扩散模型上几�
 | --- | --- |
 | metrics / spectrum（纯 numpy） | ✅ 实测，25 项断言全过 |
 | 数据工具 `layout.py` / `prepare_data.py` | ✅ 实测，21 项断言全过（含硬链接别名、冲突改名、跨集哈希泄漏） |
-| 算子族 / 模型 / 训练循环（torch） | ✅ 实测（CPU torch 2.15.0+cpu）：`smoke_test.py` 共 **70 项**全过 |
+| 算子族 / 模型 / 训练循环（torch） | ✅ 实测（CPU torch 2.15.0+cpu）：`smoke_test.py` 共 **74 项**全过 |
 | 预处理与官方一致性 | ✅ 已对照官方 `data/datasets.py` 源码逐条落实 |
 | 真实数据集上的数字 | ✅ 已跑（2026-11-07，见 5.7）：17 生成器 152,598 张，Acc/AUC/AP = 82.65/92.41/91.18 |
 | 算子族消融（真实数据） | ⚠️ 只有 `--mode pretrained` 探针（同一权重换算子）。**没有** `--mode scratch` 的从头训练对比，因为没有 ForenSynths 训练集（约 30GB，Google Drive 本机不可达） |

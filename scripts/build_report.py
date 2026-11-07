@@ -70,6 +70,8 @@ HEAD_FONT = "黑体"
 CODE_FONT = "Consolas"
 #: literal backtick, kept out of the source so no shell can eat it
 TICK = chr(96)
+#: mean Acc reported by the NPR paper (ForenSynths, 16 generators)
+PAPER_MEAN_ACC = 91.7
 
 # usable width on A4 with the template's 1.25in margins
 TEXT_WIDTH_CM = 14.6
@@ -561,6 +563,18 @@ def load_calibration():
         return None
 
 
+def load_calibration_rows() -> Dict[str, dict]:
+    """Per-generator threshold calibration (results/calibration.csv)."""
+    if not os.path.isfile(CALIB_CSV):
+        return {}
+    out = {}
+    with open(CALIB_CSV, "r", encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("generator"):
+                out[row["generator"]] = row
+    return out
+
+
 def load_profile() -> List[dict]:
     if not os.path.isfile(PROFILE_CSV):
         return []
@@ -738,7 +752,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_rich(p, "仓库地址：", size=10.5)
     add_hyperlink(p, REPO_URL, REPO_URL, size=10)
     add_rich(p, "。本地已完成 `git init` 与首次"
-                "提交（分支 `main`，32 个文件，工作区干净），`origin` 已指向该仓库；"
+                "提交（分支 `main`，工作区干净），`origin` 已指向该仓库；"
                 "推上去之后此链接即为最终代码。若地址有变，改 `scripts/build_report.py` 里"
                 "这一行后重跑即可，不必手工改 docx。")
     add_body(doc, "为保证评分时不依赖网络，提交包内 `3_可选附件或代码/aigc-freq-forensics/` "
@@ -771,7 +785,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     # ---------------- 3. data ----------------
     add_section(doc, "3. 数据描述 数据是什么")
     add_body(doc, "本报告实际使用的数据是 **AIGI_test**：17 个生成器的真假二分类测试集，"
-                  "共 **152,598 张**（76,299 real / 76,299 fake），解压后 34.04 GB。"
+                  "共 **152,598 张**（76,299 real / 76,299 fake），解压后 34.0 GiB（约 36.5 GB）。"
                   "每个生成器一个目录、内含 `0_real` 与 `1_fake`；其中 ProGAN、CycleGAN、StyleGAN、"
                   "StyleGAN2 四个生成器还按物体类别再分了子目录（ProGAN 20 类、CycleGAN 6 类），"
                   "收拾时必须先合并成“一个生成器”，否则 20 个目录会被当成 20 个生成器，"
@@ -821,7 +835,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
         add_body(doc, "读法：**9 个扩散生成器的 real 全是 JPEG、fake 全是 PNG，而且 real 是约 500×375 的"
                       "非方图、fake 是 256²/512²/1024² 的方图** —— 在扩散子集里，"
                       "“这是 fake”与“这是 PNG 且是方图”是同一件事。"
-                      "相比之下 7 个 GAN 生成器两侧都是 256² 的 PNG（WhichFaceIsReal 两侧都是 1024² JPEG），"
+                      "相比之下 7 个 GAN 生成器两侧都是 PNG、且**以 256×256 为主**（抽样中 70–100% 为方图；WhichFaceIsReal 两侧都是 1024² JPEG），"
                       "**GAN 子集没有这个混杂**。", size=10)
         add_body(doc, "后果必须写在明面上：第 5 节的 “GAN 90.50 vs 扩散 75.68” **不能干净地归因于"
                       "“生成器类型 / 上采样核差异”**，至少要先排除三个替代解释 —— "
@@ -873,7 +887,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "高通算子来说，这等于自己伪造了伪影；改为 replicate 填充。块 DCT 的逆变换最初用错转置方向"
                   "（用了 `B·X` 而非 `Bᵀ·X`），DCT 矩阵不对称，常数图重建不回去（残差 0.462）；改正后"
                   "残差降到 2.09e-07。两者都不抛异常，只会让所有后续数字悄悄偏掉。")
-    add_body(doc, "**改动 6：70 项无数据集自检。** `scripts/smoke_test.py` 覆盖指标、频谱、数据整理与"
+    add_body(doc, "**改动 6：74 项无数据集自检。** `scripts/smoke_test.py` 覆盖指标、频谱、数据整理与"
                   "算子/模型四段，其中“常数图必须被每个高通算子归零”“`npr_nearest` 必须与官方公式逐元素"
                   "一致”这两条断言，正是抓住上述两个 bug 的测试。没有 torch 时明确 SKIP，不假装通过。")
     add_body(doc, "**改动 7：评测层改成报原始 logit（真实数据才暴露的坑）。** 官方权重在真实图上输出的 "
@@ -901,7 +915,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
                   "只报 Acc 会把“阈值没校准”和“排序能力差”混为一谈，而这两件事的修法完全不同。")
     add_caption(doc, "表 4　代码级验证（不依赖数据集）")
     add_table(doc, ["检查项", "结果", "含义"],
-              [["自检通过率", "70 / 70", "指标、频谱、数据整理、算子与模型四段全过（缺 torch 时算子/模型段明确 SKIP，其余 44 项仍须全过）"],
+              [["自检通过率", "74 / 74", "指标、频谱、数据整理、算子与模型四段全过；`best_threshold_accuracy` 与暴力枚举对拍 3 例（含并列值）。缺 torch 时算子/模型段明确 SKIP，其余 44 项仍须全过"],
                ["参数量", "1,437,761", "与论文 1.44M 一致，证明裁剪结构复现正确"],
                ["官方权重加载", "146 / 146 张量", "0 missing / 0 unexpected：自实现网络的键名与官方 `NPR.pth` 完全一致"],
                ["`npr_nearest` vs 官方公式", "最大偏差 5.96e-08", "前置算子与上游实现逐元素等价"],
@@ -919,31 +933,51 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
               widths_cm=[4.2, 1.8, 1.8, 1.8, 2.0, 1.8], size=8.0)
     if base_summary:
         calib = load_calibration()
-        add_body(doc, f"全部 17 个生成器平均 **Acc {100 * base_summary['mean_acc']:.2f} / "
-                      f"AUC {100 * base_summary['mean_auc']:.2f} / AP {100 * base_summary['mean_ap']:.2f}**；"
-                      f"其中 8 个 GAN 平均 Acc {100 * base_summary['gan_mean_acc']:.2f}，"
-                      f"9 个扩散模型平均 Acc {100 * base_summary['diffusion_mean_acc']:.2f}。"
-                      f"两个读数要分开看：① **AUC/AP 只依赖排序**，92.41 说明“哪个更像假”的判断力是复现出来的；"
+        calib_rows = load_calibration_rows()
+        by_gen = {r["generator"]: r for r in base_rows}
+        m_acc = 100 * base_summary["mean_acc"]
+        m_auc = 100 * base_summary["mean_auc"]
+        m_ap = 100 * base_summary["mean_ap"]
+        gan_acc = 100 * base_summary["gan_mean_acc"]
+        dif_acc = 100 * base_summary["diffusion_mean_acc"]
+        add_body(doc, f"全部 17 个生成器平均 **Acc {m_acc:.2f} / AUC {m_auc:.2f} / AP {m_ap:.2f}**；"
+                      f"其中 8 个 GAN 平均 Acc {gan_acc:.2f}，9 个扩散模型平均 Acc {dif_acc:.2f}。"
+                      f"两个读数要分开看：① **AUC/AP 只依赖排序**，{m_auc:.2f} 说明“哪个更像假”的判断力是复现出来的；"
                       f"论文报的 91.7 是 **Acc**，而且是在 ForenSynths 的 16 生成器表上，"
                       f"与本报告的 17 生成器 / AIGI_test 不是同一张表，两个数字不能直接相减。")
+        gap = PAPER_MEAN_ACC - m_acc
         if calib and calib.get("global"):
             g = calib["global"]
+            all_g = calib["groups"]["all"]
             add_body(doc, "② **阈值偏移到底贡献了多少：这是测出来的，不是推出来的。** "
-                          f"把每个生成器的真假两半各自随机对半分（调阈值 / 评估互不重叠，种子 70），"
+                          "把每个生成器的真假两半各自随机对半分（调阈值 / 评估互不重叠，种子 70），"
                           f"调出一个全体共用阈值 {g['threshold']:+.2f} 后，留在评估半边上的 "
                           f"Acc 从 **{g['acc_thr0']:.2f} 升到 {g['acc_tuned']:.2f}（{g['gain']:+.2f} pp）**，"
                           f"AUC {g['auc']:.2f}。若按生成器各自调阈值（部署时用不上，因为要预知来源），"
-                          f"上界是 {calib['groups']['all']['acc_tuned']:.2f}（+{calib['groups']['all']['gain']:.2f} pp）。"
-                          "所以：**阈值偏移能解释约 2 pp，不是 9 pp**；剩下的差距主要来自测试集不同"
-                          "（AIGI_test 的 fake 覆盖 9 种扩散模型，含 1024² 与 COCO 源域），"
-                          "以及本报告只做评测不做重训。")
+                          f"上界是 {all_g['acc_tuned']:.2f}（+{all_g['gain']:.2f} pp）。"
+                          f"所以：**阈值偏移只能解释 {g['gain']:.2f} pp，而两张表的总差是 {gap:.1f} pp**；"
+                          f"其余约 {gap - g['gain']:.1f} pp 可能来自测试集构成（AIGI_test 的 fake 覆盖 9 种扩散模型，"
+                          "含 1024² 与 COCO 源域）、源域差异，或本轮只评测不重训 —— 这三者本报告无法分离，"
+                          "需要进一步对照才能定论。")
         add_body(doc, "③ **扩散组的掉点是真实的，但归因要留口子**：本报告确实复现出 GAN 组比扩散组高 "
-                      f"{100 * base_summary['gan_mean_acc'] - 100 * base_summary['diffusion_mean_acc']:.2f} pp，"
-                      "方向与论文一致；不过第 3.1 节已经说明，这份数据的标签与容器格式/分辨率共线，"
-                      "所以这一差距**不能全部记在“生成器类型”账上**。"
-                      "④ 最弱的是 DALLE2（64.90）与 WhichFaceIsReal（65.80，AUC 仅 71.5），"
-                      "前者与论文里 DALLE2 表现最好相左，说明两个测试集的 DALLE2 子集并非同一批图，"
-                      "这一点本报告不做进一步归因。")
+                      f"{gan_acc - dif_acc:.2f} pp，方向与论文一致；不过第 3.1 节已经说明，"
+                      "这份数据的标签与容器格式/分辨率共线，所以这一差距**不能全部记在“生成器类型”账上**。")
+        dal = by_gen.get("DALLE2", {})
+        wfir = by_gen.get("whichfaceisreal", {})
+        dal_c = calib_rows.get("DALLE2", {})
+        paper_dal = NPR_PAPER.get(GEN_TO_PAPER.get("DALLE2", "DALLE2"))
+        if dal and wfir and dal_c and paper_dal:
+            dal_acc = 100 * float(dal["acc"])
+            wfir_acc = 100 * float(wfir["acc"])
+            wfir_auc = 100 * float(wfir["auc"])
+            dal_tuned = 100 * float(dal_c["acc_tuned"])
+            rest = paper_dal - dal_tuned
+            add_body(doc, f"④ 最弱的是 DALLE2（{dal_acc:.2f}）与 WhichFaceIsReal（{wfir_acc:.2f}，"
+                          f"AUC 仅 {wfir_auc:.1f}）。DALLE2 的 {dal_acc:.2f} 里很大一块是分数偏移："
+                          f"单独按生成器调阈值后是 **{dal_tuned:.2f}**（阈值 {float(dal_c['threshold']):+.2f}，"
+                          f"其 AUC 为 {100 * float(dal_c['auc']):.2f}），"
+                          f"与论文的 {paper_dal:.1f} 仍差约 {rest:.1f} pp，这部分才可能与子集差异有关；"
+                          "本报告不做进一步归因。")
 
         add_body(doc, "**残差算子看到的是什么：径向功率谱。** 图 1 把两侧统一重采样到 256² 后比较频谱"
                       "（不重采样则主要测的是分辨率差，而分辨率与标签共线，见 3.1）。"

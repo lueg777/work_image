@@ -2,8 +2,8 @@
 
 > 状态：**已完成**。代码与实验都在真机上跑过。
 >
-> - 自检：`scripts/smoke_test.py --require-torch` **70/70 通过**（Python 3.13 + torch 2.8.0+cu129）。
-> - 真实数据：`AIGI_test` 34.7 GB / **152,598 张 / 17 个生成器**（GAN 8 + 扩散 9），
+> - 自检：`scripts/smoke_test.py --require-torch` **74/74 通过**（Python 3.13 + torch 2.8.0+cu129）。
+> - 真实数据：`AIGI_test` 34.0 GiB（约 36.5 GB） / **152,598 张 / 17 个生成器**（GAN 8 + 扩散 9），
 >   硬链接摆位后 `prepare_data.py verify` 报 0 error / 0 warning。
 > - 基线：官方 `NPR.pth`（146/146 张量、1,437,761 参数）全量评测
 >   **Acc 82.65 / AUC 92.41 / AP 91.18**（Resize(256) 不裁剪口径），复现出论文
@@ -37,7 +37,7 @@ x = conv1(NPR * 2.0 / 3.0)
 
 | 用途 | 数据集 | 来源 | 规模 |
 | --- | --- | --- | --- |
-| **实际使用：泛化测试** | **AIGI_test**（NPR 仓库同源测试集） | Kaggle 打包 zip（34.7 GB），本机 `database\AIGI_test-001.zip` | **152,598 张 / 17 生成器（GAN 8 + 扩散 9）** |
+| **实际使用：泛化测试** | **AIGI_test**（NPR 仓库同源测试集） | Kaggle 打包 zip（34.0 GiB / 约 36.5 GB），本机 `database\AIGI_test-001.zip` | **152,598 张 / 17 生成器（GAN 8 + 扩散 9）** |
 | 原计划：训练/验证 | ForenSynths（4 类：car/cat/chair/horse） | CNNDetection 百度盘<br>`https://pan.baidu.com/s/1l-rXoVhoc8xJDl20Cdwy4Q?pwd=ft8b` | 20 类 × 36k 图，取 4 类子集 |
 | 原计划：泛化测试 | ForenSynths_test + GANGen-Detection + DiffusionForensics + UniversalFakeDetect + Diffusion1kStep | 同上前者；Diffusion1kStep 在<br>`https://drive.google.com/drive/folders/14f0vApTLiukiPvIHukHDzLujrvJpDpRq` | 16+ 生成器 |
 | 不推荐 | GenImage | arXiv 2306.08571 | 百万级，8GB 显存 + 消费级带宽不划算 |

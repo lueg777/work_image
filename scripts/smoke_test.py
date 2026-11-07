@@ -76,6 +76,25 @@ def _ap_bruteforce(labels, scores) -> float:
     return total / n_pos
 
 
+def _best_acc_bruteforce(y, s) -> float:
+    """Exhaustive: try every distinct score as the cut, keep the best accuracy.
+
+    Cuts between two equal scores are not representable by a single threshold, so
+    only boundaries between distinct values are tried -- that is exactly what
+    best_threshold_accuracy() must reproduce.
+    """
+    y = np.asarray(y).astype(int)
+    s = np.asarray(s, dtype=float)
+    cuts = np.unique(s)
+    best = 0.0
+    for k, c in enumerate(cuts):
+        pred = (s >= c).astype(int)
+        best = max(best, float((pred == y).mean()))
+    # also allow "predict all negative"
+    best = max(best, float((y == 0).mean()))
+    return best
+
+
 def test_metrics() -> None:
     print("\n-- metrics --")
     labels = [0, 0, 1, 1]
@@ -104,9 +123,38 @@ def test_metrics() -> None:
     check("tpr@fpr25 perfect separation", approx(tpr, 1.0), f"{tpr:.4f}")
 
     bm = M.binary_metrics(labels, scores)
-    check("binary_metrics keys", {"acc", "auc", "ap", "n", "tp", "fp", "tn", "fn"}
+    check("binary_metrics keys", {"acc", "auc", "ap", "n", "tp", "fp", "tn", "fn", "acc_best"}
           <= set(bm), str(sorted(bm)))
     check("binary_metrics n", bm["n"] == 4.0)
+
+    # best_threshold_accuracy: the TN term used to be written as (n-k)-fp, which
+    # reported 1.000 on data whose real ceiling was 0.655. Cross-check against an
+    # exhaustive scan, including a case with many tied scores.
+    acc_b = M.best_threshold_accuracy([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
+    check("best_threshold perfect separation -> 1.0", approx(acc_b, 1.0), f"{acc_b:.4f}")
+
+    rng2 = np.random.default_rng(7)
+    yb = (rng2.random(120) < 0.45).astype(int)
+    sb = rng2.random(120) + 0.35 * yb
+    brute = _best_acc_bruteforce(yb, sb)
+    got = M.best_threshold_accuracy(yb, sb)
+    check("best_threshold == brute force (no ties)", approx(got, brute, 1e-12),
+          f"{got:.6f} vs {brute:.6f}")
+
+    yt = np.array([0, 0, 0, 1, 1, 1])
+    st = np.array([0.2, 0.4, 0.4, 0.4, 0.6, 0.8])
+    brute_t = _best_acc_bruteforce(yt, st)
+    got_t = M.best_threshold_accuracy(yt, st)
+    check("best_threshold == brute force (heavy ties)", approx(got_t, brute_t, 1e-12),
+          f"{got_t:.6f} vs {brute_t:.6f}")
+
+    # The old TN term made the best possible accuracy look like a perfect classifier
+    # even when the ranking was inverted; on this data the ceiling is well below 1.
+    ys = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    ss = np.array([0.9, 0.8, 0.7, 0.6, 0.4, 0.3, 0.2, 0.1])
+    got_inv = M.best_threshold_accuracy(ys, ss)
+    check("best_threshold on inverted scores is not 1.0", got_inv <= 0.5 + 1e-12,
+          f"{got_inv:.4f}")
 
 
 # --------------------------------------------------------------------------- #
