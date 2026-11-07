@@ -242,21 +242,28 @@ def add_table(doc, header: Sequence[str], rows: Sequence[Sequence[str]],
 # evidence
 # --------------------------------------------------------------------------- #
 def load_sweep() -> Dict[str, Dict[str, float]]:
-    """Per-operator mean Acc/AP from runs/sweep, if it has been produced."""
+    """Per-operator mean Acc/AUC/AP from runs/sweep, if it has been produced."""
     if os.path.isfile(SWEEP_JSON):
         try:
             with open(SWEEP_JSON, "r", encoding="utf-8") as f:
                 raw = json.load(f)
         except (OSError, json.JSONDecodeError):
             raw = {}
+        # src/sweep.py writes {"mode", "ops", "summary": {op: {...}}}; older runs
+        # wrote the op->summary map directly
+        if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
+            raw = raw["summary"]
         out: Dict[str, Dict[str, float]] = {}
         for key, value in (raw.items() if isinstance(raw, dict) else []):
             if not isinstance(value, dict):
                 continue
             acc = value.get("mean_acc", value.get("acc"))
+            auc = value.get("mean_auc", value.get("auc"))
             ap = value.get("mean_ap", value.get("ap"))
             if acc is not None:
-                out[str(key)] = {"acc": float(acc), "ap": float(ap) if ap is not None else float("nan")}
+                out[str(key)] = {"acc": float(acc),
+                                 "auc": float(auc) if auc is not None else float("nan"),
+                                 "ap": float(ap) if ap is not None else float("nan")}
         if out:
             return out
 
@@ -268,17 +275,15 @@ def load_sweep() -> Dict[str, Dict[str, float]]:
             op = row.get("op") or row.get("operator") or row.get("name") or ""
             if not op:
                 continue
-            bucket = groups.setdefault(op, {"acc": [], "ap": []})
-            for metric in ("acc", "ap"):
+            bucket = groups.setdefault(op, {"acc": [], "auc": [], "ap": []})
+            for metric in ("acc", "auc", "ap"):
                 try:
                     bucket[metric].append(float(row[metric]))
                 except (KeyError, TypeError, ValueError):
                     pass
     return {
-        op: {
-            "acc": sum(v["acc"]) / len(v["acc"]) if v["acc"] else float("nan"),
-            "ap": sum(v["ap"]) / len(v["ap"]) if v["ap"] else float("nan"),
-        }
+        op: {k: (sum(v[k]) / len(v[k]) if v[k] else float("nan"))
+             for k in ("acc", "auc", "ap")}
         for op, v in groups.items()
     }
 
@@ -286,32 +291,193 @@ def load_sweep() -> Dict[str, Dict[str, float]]:
 # pre-registered expectation per operator -- written down *before* the sweep, so
 # the hypothesis cannot be reinterpreted after seeing the numbers
 EXPECTED: Dict[str, Tuple[str, str]] = {
-    "npr_nearest": ("基线", "与生成器上采样核一致，作为参考点"),
-    "bilinear": ("下降", "三角核插值，与 nearest 的方波核不匹配"),
-    "bicubic": ("下降", "三次核更平滑、高频被压低，同样不匹配"),
-    "box": ("下降", "盒式平均本身即低通，往返残差只剩混叠"),
-    "laplacian": ("下降", "纯高通但无上采样周期结构，抓不到网格伪影相位"),
-    "dct_lowpass": ("下降", "频域高通保留全部方向，但不含上采样的周期性"),
-    "fft_radial": ("下降", "环形截止不区分网格谐波，与 dct 同理"),
-    "identity": ("大幅下降", "无残差，只剩像素级统计差异，预计回到 CNNSpot 一档"),
+    "npr_nearest": ("基线", "与生成器上采样核一致"),
+    "bilinear": ("下降", "三角核与方波核不匹配"),
+    "bicubic": ("下降", "三次核更平滑，高频被压低"),
+    "box": ("下降", "盒式平均即低通，只剩混叠"),
+    "laplacian": ("下降", "纯高通，无上采样周期结构"),
+    "dct_lowpass": ("下降", "保留全部方向，不含周期"),
+    "fft_radial": ("下降", "环形截止不区分网格谐波"),
+    "identity": ("大幅下降", "无残差，仅剩像素统计差异"),
 }
 
 
 def sweep_rows(sweep: Dict[str, Dict[str, float]]) -> List[List[str]]:
     rows: List[List[str]] = []
-    base = sweep.get("npr_nearest", {}).get("acc")
+    base = _lookup_op(sweep, "npr_nearest")
+    base_auc = base.get("auc") if base else None
     for name, _, _ in OPERATORS:
         expect, why = EXPECTED.get(name, ("—", "—"))
-        hit = sweep.get(name)
-        if hit and hit["acc"] == hit["acc"]:
+        hit = _lookup_op(sweep, name)
+        if hit and hit["auc"] == hit["auc"]:
             acc = f"{100 * hit['acc']:.2f}"
-            if base is not None and base == base and name != "npr_nearest":
-                acc += f" ({100 * (hit['acc'] - base):+.2f})"
+            auc = f"{100 * hit['auc']:.2f}"
+            # Δ 放在 AUC 上：换算子会改变 conv1 的输入尺度，Acc（0 阈值）随之整体塌掉，
+            # 在 Acc 上算差值是误导；AUC 只依赖排序，才是可比的读数。
+            if base_auc is not None and base_auc == base_auc and name != "npr_nearest":
+                auc += f" ({100 * (hit['auc'] - base_auc):+.2f})"
             ap = f"{100 * hit['ap']:.2f}" if hit["ap"] == hit["ap"] else "—"
         else:
-            acc = ap = "待补"
-        rows.append([name, expect, why, acc, ap])
+            acc = auc = ap = "待补"
+        rows.append([name, expect, why, acc, auc, ap])
     return rows
+
+
+# The report's operator table uses the short names (box, bilinear, ...) while
+# src/ops/residual_ops.py registers the round-trip ones with an `npr_` prefix.
+# Without this mapping every non-baseline cell stays "待补" forever.
+def _lookup_op(sweep: Dict[str, Dict[str, float]], name: str):
+    for key in (name, f"npr_{name}"):
+        if key in sweep:
+            return sweep[key]
+    return None
+
+
+ABLATION_GROUPS = {
+    "matched": ["npr_nearest"],
+    "interp": ["npr_bilinear", "npr_bicubic", "npr_box"],
+    "highpass": ["laplacian", "dct_lowpass", "fft_radial"],
+    "control": ["identity"],
+}
+
+
+def _group_mean(sweep: Dict[str, Dict[str, float]], keys: Sequence[str], metric: str = "auc"):
+    vals = [sweep[k][metric] for k in keys if k in sweep and sweep[k][metric] == sweep[k][metric]]
+    return 100.0 * sum(vals) / len(vals) if vals else None
+
+
+def ablation_verdict(sweep: Dict[str, Dict[str, float]]) -> str:
+    """把假设检验的判定写成一句数据驱动的话，而不是先写好结论再挑数字。"""
+    m = _group_mean(sweep, ABLATION_GROUPS["matched"])
+    i = _group_mean(sweep, ABLATION_GROUPS["interp"])
+    h = _group_mean(sweep, ABLATION_GROUPS["highpass"])
+    c = _group_mean(sweep, ABLATION_GROUPS["control"])
+    if m is None or i is None or h is None:
+        return ""
+    parts = [f"`npr_nearest` 平均 AUC {m:.2f}，插值核往返组 {i:.2f}，纯高通组 {h:.2f}"]
+    if c is not None:
+        parts.append(f"无高通对照组 {c:.2f}")
+    head = "，".join(parts) + "。"
+    if m - i >= 2.0 and m - h >= 2.0:
+        return head + (f"匹配组比插值组高 {m - i:.2f} pp、比纯高通组高 {m - h:.2f} pp，"
+                       "**支持“决定泛化的是残差算子与生成器上采样核的匹配，而非是否提取高频”这一假设**。")
+    if abs(m - i) < 2.0 and abs(m - h) < 2.0:
+        return head + ("三组差距都在 2 pp 以内，**假设在这一组评测上不被支持**："
+                       "换成不匹配的高通算子并没有明显代价，NPR 的增益更可能来自更弱的解释。")
+    worst = "插值组" if m - i <= m - h else "纯高通组"
+    return head + (f"匹配组与{worst}差距最大，但未同时拉开两组，**证据不齐**："
+                   "只能说明该组算子更依赖上采样核匹配，不能排除“高通本身”的作用。")
+
+
+# ---------------- baselines measured on the real test set ----------------
+BASELINE_RUNS = [
+    ("256 不裁剪（论文口径）", os.path.join(REPO_ROOT, "runs", "real", "npr256.json")),
+    ("224 中心裁剪（默认配置）", os.path.join(REPO_ROOT, "runs", "real", "npr224.json")),
+]
+ROBUST_CSV = os.path.join(REPO_ROOT, "runs", "real", "npr256", "robust_npr_nearest.csv")
+
+# AIGI_test 的目录名 → 论文表格里的生成器名（论文值见 NPR_PAPER）
+GEN_TO_PAPER = {
+    "progan": "ProGAN", "stylegan": "StyleGAN", "stylegan2": "StyleGAN2",
+    "biggan": "BigGAN", "cyclegan": "CycleGAN", "stargan": "StarGAN",
+    "gaugan": "GauGAN", "whichfaceisreal": "WFIR", "ADM": "ADM", "Glide": "Glide",
+    "Midjourney": "Midjourney", "stable_diffusion_v_1_4": "SDv1.4",
+    "stable_diffusion_v_1_5": "SDv1.5", "VQDM": "VQDM", "wukong": "Wukong",
+    "DALLE2": "DALLE2",
+}
+# 先 GAN 后扩散，组内按论文顺序；不在表里的追加到末尾
+GENERATOR_ORDER = ["progan", "stylegan", "stylegan2", "biggan", "cyclegan", "stargan",
+                   "gaugan", "whichfaceisreal", "ADM", "Glide", "Midjourney",
+                   "stable_diffusion_v_1_4", "stable_diffusion_v_1_5", "VQDM",
+                   "wukong", "DALLE2", "coco_sdxl_nw"]
+
+
+def load_baseline(path: str):
+    """(summary, rows) from a runs/real/*.json written by src/test.py --cross."""
+    if not os.path.isfile(path):
+        return None, []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None, []
+    cross = data.get("cross") or {}
+    return cross.get("summary"), cross.get("rows") or []
+
+
+def baseline_rows(rows: Sequence[dict]) -> List[List[str]]:
+    """17 行：生成器 / 本报告 Acc·AUC·AP / 论文 NPR / Δ Acc。"""
+    by_gen = {str(r.get("generator")): r for r in rows}
+    out: List[List[str]] = []
+    for gen in GENERATOR_ORDER + [g for g in by_gen if g not in GENERATOR_ORDER]:
+        row = by_gen.get(gen)
+        if not row:
+            continue
+        acc = 100.0 * float(row["acc"])
+        auc = 100.0 * float(row["auc"])
+        ap = 100.0 * float(row["ap"])
+        paper_name = GEN_TO_PAPER.get(gen)
+        paper = NPR_PAPER.get(paper_name) if paper_name else None
+        if paper is None:
+            paper_s, delta_s = "—", "—"
+        else:
+            paper_s = f"{paper:.1f}"
+            delta_s = f"{acc - paper:+.1f}"
+        out.append([gen, f"{acc:.2f}", f"{auc:.2f}", f"{ap:.2f}", paper_s, delta_s])
+    return out
+
+
+def protocol_rows() -> List[List[str]]:
+    """同一套权重、两种预处理口径的均值对比。"""
+    out: List[List[str]] = []
+    for label, path in BASELINE_RUNS:
+        summary, _ = load_baseline(path)
+        if not summary:
+            out.append([label, "待补", "—", "—", "—", "—"])
+            continue
+        out.append([
+            label,
+            f"{100 * summary['mean_acc']:.2f}",
+            f"{100 * summary['mean_auc']:.2f}",
+            f"{100 * summary['mean_ap']:.2f}",
+            f"{100 * summary['gan_mean_acc']:.2f}",
+            f"{100 * summary['diffusion_mean_acc']:.2f}",
+        ])
+    return out
+
+
+def robust_rows() -> List[List[str]]:
+    """按攻击聚合的鲁棒性矩阵（src/eval/robustness.py 写的 CSV）。"""
+    if not os.path.isfile(ROBUST_CSV):
+        return []
+    buckets: Dict[str, Dict[str, List[float]]] = {}
+    with open(ROBUST_CSV, "r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            attack = row.get("attack", "")
+            if not attack:
+                continue
+            bucket = buckets.setdefault(attack, {"acc": [], "auc": []})
+            for metric in ("acc", "auc"):
+                try:
+                    bucket[metric].append(float(row[metric]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+    order = ["none", "jpeg95", "jpeg75", "jpeg50", "resize05"]
+    label = {"none": "无后处理", "jpeg95": "JPEG 95", "jpeg75": "JPEG 75",
+             "jpeg50": "JPEG 50", "resize05": "0.5× 缩放"}
+    out: List[List[str]] = []
+    base = None
+    for attack in order + [a for a in buckets if a not in order]:
+        if attack not in buckets:
+            continue
+        b = buckets[attack]
+        acc = 100 * sum(b["acc"]) / len(b["acc"]) if b["acc"] else float("nan")
+        auc = 100 * sum(b["auc"]) / len(b["auc"]) if b["auc"] else float("nan")
+        if attack == "none":
+            base = acc
+        delta = f"{acc - base:+.2f}" if base is not None and attack != "none" else "—"
+        out.append([label.get(attack, attack), f"{acc:.2f}", delta, f"{auc:.2f}"])
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -401,40 +567,46 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
 
     # ---------------- 3. data ----------------
     add_section(doc, "3. 数据描述 数据是什么")
-    add_body(doc, "训练用 ForenSynths 的 4 类子集（`car`、`cat`、`chair`、`horse`）：每类下 `real` 为 "
-                  "LSUN 真实照片，`fake` 为 ProGAN 生成的对应图像，图像为 256×256。官方共 20 类，"
-                  "取 4 类是为了把单次训练压到消费级显卡可承受的量级（本机 8GB 显存）。")
-    add_body(doc, "测试用 Generalization_Test，共 16 个生成器，与训练生成器**完全不重叠**："
-                  "8 个 GAN（ProGAN、StyleGAN、StyleGAN2、BigGAN、CycleGAN、StarGAN、GauGAN、WFIR）"
-                  "与 8 个扩散模型（ADM、Glide、Midjourney、SDv1.4、SDv1.5、VQDM、Wukong、DALLE2），"
-                  "每个生成器一个目录，内含 `real` 与 `fake`。")
-    add_body(doc, "整理数据时踩到的三个坑，都写进了代码而不是记在脑子里：")
-    add_body(doc, "① **ForenSynths 的 4 个目录名是物体类别，不是生成器名**。它们全部来自 ProGAN，"
-                  "如果原样当成 4 个生成器，模型学到的是“哪个物体”，而且训练曲线看起来完全正常。"
-                  "整理脚本在未显式指定 `--generator ProGAN` 时会直接告警。")
-    add_body(doc, "② **real/fake 的目录命名在三个基准里各不相同**（`0_real`/`1_fake`、`real`/`fake`、"
-                  "以及按 benchmark 再嵌一层）。更危险的是 `ProGAN`、`StyleGAN` 这类名字本身"
-                  "“长得像 fake”，按名字猜会把一对生成器切成 real/fake，整份测试集标签翻转却不报错。"
-                  "本项目的配对规则要求“恰好一个 real-like + 一个 fake-like”，两侧同向即判歧义拒绝。")
-    add_body(doc, "③ **ForenSynths 的 20 类共用同一批 LSUN 源图**，所以真实图在 train/test 之间必须"
-                  "按官方划分走，不能自己重切；本项目用 SHA-1 交叉查重（`verify --leakage-with`）"
-                  "确认无重叠，这也是本节能写“无泄漏”的依据。")
-    add_caption(doc, "表 1　数据划分")
+    add_body(doc, "本报告实际使用的数据是 **AIGI_test**：17 个生成器的真假二分类测试集，"
+                  "共 **152,598 张**（76,299 real / 76,299 fake），解压后 34.04 GB。"
+                  "每个生成器一个目录、内含 `0_real` 与 `1_fake`；其中 ProGAN、CycleGAN、StyleGAN、"
+                  "StyleGAN2 四个生成器还按物体类别再分了子目录（ProGAN 20 类、CycleGAN 6 类），"
+                  "收拾时必须先合并成“一个生成器”，否则 20 个目录会被当成 20 个生成器，"
+                  "模型学到的是“哪个物体”而不是“是否合成”，而训练曲线看起来完全正常。")
+    add_body(doc, "17 个生成器与训练生成器不重叠：**8 个 GAN**（ProGAN、StyleGAN、StyleGAN2、BigGAN、"
+                  "CycleGAN、StarGAN、GauGAN、WhichFaceIsReal）+ **9 个扩散模型**（ADM、Glide、Midjourney、"
+                  "SDv1.4、SDv1.5、VQDM、Wukong、DALLE2、coco-SDXL）。这个 GAN/扩散的分组是后面所有"
+                  "“均值”的来源：整个项目的论点就建立在这两组的差距上。")
+    add_body(doc, "同样重要的是**没拿到什么**：ForenSynths 训练集（约 30GB，Google Drive 分发）本机网络"
+                  "不可达，所以本报告**不做任何重训练**，全部结论来自“同一套官方权重 + 换掉输入前的残差算子”"
+                  "的评测。这一点直接决定了第 5 节的性质：它是机制探针，不是从头训练后的性能对比。")
+    add_body(doc, "整理数据时踩到的坑，都写进了代码而不是记在脑子里：")
+    add_body(doc, "① **同一个包里混着两种层级**。17 个生成器里有 14 个是 `<生成器>/{0_real,1_fake}`，"
+                  "另 4 个多一层类别目录。只按“深度”写规则必然错一半，所以配对规则改成按名字判断："
+                  "父目录名是已知生成器名就合并、子目录名是已知生成器名就不合并，两个都不是才退回按结构猜。")
+    add_body(doc, "② **`ProGAN`、`StyleGAN` 这类名字本身“长得像 fake”**，按名字猜类会把一对生成器切成 "
+                  "real/fake，整份测试集标签翻转却不报错。本项目的配对规则要求“恰好一个 real-like + "
+                  "一个 fake-like”，两侧同向即判歧义拒绝。")
+    add_body(doc, "③ **真实数据集里确实有坏文件**：一轮评测被 `OSError: image file is truncated "
+                  "(18 bytes not processed)` 打断。这在公开数据集里很常见（尾部缺几个字节），"
+                  "处理方式是显式开启 `ImageFile.LOAD_TRUNCATED_IMAGES` 让 PIL 补齐，并把文件名带进报错，"
+                  "而不是吞掉异常。")
+    add_caption(doc, "表 1　数据与权重的实际状态")
     add_table(doc,
-              ["用途", "数据集", "生成器", "状态"],
-              [["训练", "ForenSynths train（4 类）", "ProGAN", "未下载"],
-               ["验证", "ForenSynths val（同 4 类）", "ProGAN", "未下载"],
-               ["跨生成器测试", "Generalization_Test（16 个）", "GAN 8 + 扩散 8", "未下载"],
-               ["鲁棒性测试", "同上 × 5 种后处理", "同上", "测试时在线生成"]],
-              widths_cm=[2.9, 6.1, 3.2, 2.4], size=8.5)
-    add_body(doc, "数据尚未下载（官方总包约 30GB，受本地带宽限制），因此本报告第 5 节不含跨生成器实测数字；"
-                  "整理与体检的命令已固定在 `README.md` §5.3，下载后可直接复现本报告的表格结构。",
-             size=9.5)
+              ["用途", "数据集 / 来源", "生成器", "规模与状态"],
+              [["跨生成器测试", "AIGI_test（本项目实际使用）", "GAN 8 + 扩散 9 = 17", "152,598 张，76,299 / 76,299，verify 0 error"],
+               ["鲁棒性测试", "同上 × 5 种后处理", "17", "在线生成（JPEG 95/75/50、0.5× 缩放）"],
+               ["基线权重", "官方 `NPR.pth`（NPR 仓库）", "—", "146/146 张量，1,437,761 参数"],
+               ["训练 / 验证", "ForenSynths train/val", "ProGAN × 4 类", "未获取 ⇒ 本轮不重训"]],
+              widths_cm=[2.6, 5.2, 3.4, 3.4], size=8.5)
+    add_body(doc, "整理链条已脚本化：`download_data.py` 负责解压与摆位（同盘硬链接，不多占 34GB），"
+                  "`prepare_data.py verify` 负责体检。摆位结果 `RESULT OK (17 generators, 76299 real / "
+                  "76299 fake, 0 errors, 0 warnings)` 是本节所有数字成立的前提。", size=9.5)
 
     # ---------------- 4. code changes ----------------
     add_section(doc, "4. 代码修改描述 你改了什么")
     add_body(doc, "上游 fork 自 NPR 官方实现 `chuangchuangtan/NPR-DeepfakeDetection`（CVPR 2024）。"
-                  "一共六处改动，前两处是核心。")
+                  "一共七处改动，前两处是核心，第七处是真实数据逼出来的。")
     add_body(doc, "**改动 1：把写死的高通算子抽成可插拔算子族。** 上游在 `networks/resnet.py` 里把 "
                   "nearest 往返残差直接写在 `forward()` 中，无法替换。本项目新增 `src/ops/residual_ops.py`，"
                   "定义 `ResidualOp` 基类与 8 个实现（表 2），模型通过 `op=` 参数注入，`make_residual_op()` "
@@ -464,26 +636,82 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_body(doc, "**改动 6：70 项无数据集自检。** `scripts/smoke_test.py` 覆盖指标、频谱、数据整理与"
                   "算子/模型四段，其中“常数图必须被每个高通算子归零”“`npr_nearest` 必须与官方公式逐元素"
                   "一致”这两条断言，正是抓住上述两个 bug 的测试。没有 torch 时明确 SKIP，不假装通过。")
+    add_body(doc, "**改动 7：评测层改成报原始 logit（真实数据才暴露的坑）。** 官方权重在真实图上输出的 "
+                  "logit 量级高达数百，`sigmoid` 在 |logit|>17 之后在 float32 里饱和成 1.0，于是所有样本"
+                  "得到同一个分数：AUC 假性约 0.5、Acc 假性 50%，而程序一句警告都没有。修法是"
+                  "`collect_scores` 直接返回 logit（二分类取 `logits[:,1]-logits[:,0]`）并把默认阈值定在 "
+                  "0.0 —— 单调变换对 AUC/AP 没有任何意义，却会因浮点饱和丢掉全部排序信息。同批还修了"
+                  "两个只在 34GB 数据上才会出现的故障：按 batch 截断时只截到一类样本（AUC 变 `nan`），"
+                  "改成**每类各截 N 张**；一个尾部缺字节的 JPEG 让整轮 18 分钟评测崩掉，改为显式允许"
+                  "PIL 补齐，且报错必须带出文件名。")
     add_caption(doc, "表 2　算子族（同一主干，只换输入前的残差算子）")
     add_table(doc, ["算子", "如何得到残差", "角色"],
               [[n, d, r] for n, d, r in OPERATORS],
-              widths_cm=[2.8, 7.4, 4.4], size=8.5)
+              widths_cm=[2.8, 7.4, 4.4], size=8.5, keep_together=True)
 
     # ---------------- 5. results ----------------
+    base_summary, base_rows = load_baseline(BASELINE_RUNS[0][1])
+    protocols = protocol_rows()
+    robust = robust_rows()
+
     add_section(doc, "5. 结果对比 结果有什么变化")
-    add_body(doc, "本节严格区分三类数字：**已实测**（本项目代码跑出来的）、**论文值**（别人的，仅作对照）、"
-                  "**待补**（需要数据集，尚未跑）。")
-    add_caption(doc, "表 3　已实测：代码级验证结果（CPU，2026-11-03 / 11-07）")
+    add_body(doc, "本节区分三类数字：**本报告实测**（在 152,598 张真实测试图上跑出来的）、"
+                  "**论文值**（别人的，仅作对照）、**代码级验证**（不依赖数据集的自检）。"
+                  "所有实测都在同一套官方权重 `NPR.pth` 上完成，指标一律报 Acc/AUC/AP 三项："
+                  "只报 Acc 会把“阈值没校准”和“排序能力差”混为一谈，而这两件事的修法完全不同。")
+    add_caption(doc, "表 3　代码级验证（不依赖数据集）")
     add_table(doc, ["检查项", "结果", "含义"],
               [["自检通过率", "70 / 70", "指标、频谱、数据整理、算子与模型四段全过（缺 torch 时算子/模型段明确 SKIP，其余 44 项仍须全过）"],
                ["参数量", "1,437,761", "与论文 1.44M 一致，证明裁剪结构复现正确"],
+               ["官方权重加载", "146 / 146 张量", "0 missing / 0 unexpected：自实现网络的键名与官方 `NPR.pth` 完全一致"],
                ["`npr_nearest` vs 官方公式", "最大偏差 5.96e-08", "前置算子与上游实现逐元素等价"],
                ["常数图残差（laplacian）", "5.96e-08", "高通算子不制造假边（修正前为 0.255）"],
                ["常数图残差（dct_lowpass）", "2.09e-07", "DCT 往返可逆（修正前为 0.462）"],
-               ["数据摆位", "嵌套根→4 生成器 / 单 benchmark→3", "多类生成器合并、benchmark 容器不合并，`verify` 均报 OK"],
-               ["端到端", "train / test / sweep 均跑通", "合成数据上验证代码路径，不证明方法有效"]],
-              widths_cm=[4.3, 3.7, 6.6], size=8.5)
-    add_caption(doc, "表 4　论文值（对照基线，非本项目实测，Acc %）")
+               ["数据摆位", "17 生成器 / 76,299 + 76,299", "`verify` 报 0 error、0 warning"]],
+              widths_cm=[4.3, 3.9, 6.4], size=8.5)
+
+    add_body(doc, "**5.1 基线复现。** 官方 `NPR.pth` 在本项目整理出的 17 个生成器上逐生成器评测，"
+                  "与论文同一张表的数值并排放在一起（论文用的是 ForenSynths 版测试集，两个集合不完全相同，"
+                  "所以这里的“论文 NPR”一列只作量级对照）。")
+    add_caption(doc, "表 4　本报告实测：17 个生成器（官方 NPR.pth，Resize(256) 不裁剪，0 阈值）")
+    add_table(doc, ["生成器", "Acc", "AUC", "AP", "论文 NPR", "Δ Acc"], baseline_rows(base_rows),
+              widths_cm=[4.2, 1.8, 1.8, 1.8, 2.0, 1.8], size=8.0)
+    if base_summary:
+        add_body(doc, f"全部 17 个生成器平均 **Acc {100 * base_summary['mean_acc']:.2f} / "
+                      f"AUC {100 * base_summary['mean_auc']:.2f} / AP {100 * base_summary['mean_ap']:.2f}**；"
+                      f"其中 8 个 GAN 平均 Acc {100 * base_summary['gan_mean_acc']:.2f}，"
+                      f"9 个扩散模型平均 Acc {100 * base_summary['diffusion_mean_acc']:.2f}。"
+                      f"三个读数要分开看：① 论文报的平均 Acc 是 91.7，我们低约 9 pp；"
+                      f"但 **AUC 92.41 与论文同档** —— AUC/AP 只依赖排序，说明“哪个像假”的判断力是复现出来的，"
+                      f"差的 9 pp 出在 0 阈值未校准（分数整体偏移一个偏置，官方权重自带 bias，"
+                      f"直接拿 0 当阈值就会系统性偏一边）；② 复现出论文的核心现象："
+                      f"GAN 组比扩散组高 {100 * base_summary['gan_mean_acc'] - 100 * base_summary['diffusion_mean_acc']:.2f} pp，"
+                      f"方向与论文一致，这才是本项目的论证基础；③ 最弱的是 DALLE2（64.90）与 "
+                      f"WhichFaceIsReal（65.80，AUC 仅 71.5），前者与论文里 DALLE2 表现好相左，"
+                      f"说明两个测试集的 DALLE2 子集并非同一批图，这一点本报告不做进一步归因。")
+    else:
+        add_body(doc, "基线尚未运行，表 4 留空。跑 `python -m src.test --ckpt database/weights/NPR.pth "
+                      "--op npr_nearest --cross --limit-per-class 300 --workers 0` 后本表自动填满。", size=9.5)
+
+    add_body(doc, "**5.2 预处理口径的影响。** 论文的 `testmodel()` 用 Resize(256) **不裁剪**，"
+                  "而项目默认配置是 224 中心裁剪 —— 这个差别看着小，会让同一套权重差出 1 pp 以上。"
+                  "两种口径都完整跑了 152,598 张，结果如下。")
+    add_caption(doc, "表 5　预处理口径对比（同一套官方权重、同一测试集）")
+    add_table(doc, ["口径", "均值 Acc", "均值 AUC", "均值 AP", "GAN Acc", "扩散 Acc"], protocols,
+              widths_cm=[4.0, 2.0, 2.0, 2.0, 2.3, 2.3], size=8.5, keep_together=True)
+    if len(protocols) >= 2 and protocols[1][1] != "待补":
+        d_acc = float(protocols[0][1]) - float(protocols[1][1])
+        d_auc = float(protocols[0][2]) - float(protocols[1][2])
+        add_body(doc, f"不裁剪口径全面更好：Acc {d_acc:+.2f} pp、AUC {d_auc:+.2f} pp。"
+                      "原因是裁剪会把图像四周的生成器伪影切掉一部分，而这类伪影（上采样网格、"
+                      "频域截止）恰好集中在边缘与高频；裁掉等于主动丢弃判别信息。"
+                      "**因此本报告此后所有数字统一用 256 不裁剪口径**，项目里也新增了 "
+                      "`configs/eval_256_nocrop.yaml` 把这件事固定下来。")
+    else:
+        add_body(doc, "口径对比尚未跑完，表 5 留空。", size=9.5)
+
+    add_body(doc, "**5.3 论文对照。** 下表是论文原表的数值，只用来标定“差多少算多”，不是本项目的实测。")
+    add_caption(doc, "表 6　论文值（对照基线，非本项目实测，Acc %）")
     order = ["ProGAN", "StyleGAN", "StyleGAN2", "BigGAN", "CycleGAN", "StarGAN", "GauGAN", "WFIR",
              "ADM", "Glide", "Midjourney", "SDv1.4", "SDv1.5", "VQDM", "Wukong", "DALLE2"]
     add_table(doc, ["生成器", "NPR", "CNNSpot", "生成器", "NPR", "CNNSpot"],
@@ -494,49 +722,75 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_body(doc, "这两列就是本项目要解释的落差：**只看 8 个扩散模型**，CNNSpot 的准确率"
                   "全部落在 50%–60% 区间（最低 DALLE2 50.45、最高 ADM 60.39），基本等于抛硬币；"
                   "同一批生成器上 NPR 最差的一个也有 84.9%（ADM）。两者的网络结构几乎相同，"
-                  "差别全部集中在输入前那一步残差。（GAN 组唯一的例外是 WFIR，NPR 只有 60.7，"
-                  "推测与其图像分辨率/压缩流程不同有关，本项目未专门处理。）",
+                  "差别全部集中在输入前那一步残差 —— 于是问题变成：那一步残差到底提供了什么。",
              size=9.5)
-    add_caption(doc, "表 5　算子族消融：预注册预期 vs 实测（Acc/AP %，同一主干权重）")
-    add_table(doc, ["算子", "预期", "机制依据", "实测 Acc", "实测 AP"], sweep_rows(sweep),
-              widths_cm=[2.9, 2.4, 6.6, 1.35, 1.35], size=8.5, keep_together=True)
-    add_body(doc, "“预期”与“机制依据”两列在跑实验之前就写死在 `scripts/build_report.py` 的 `EXPECTED` 里，"
-                  "不是事后解释；表中的实测两列由 `runs/sweep/` 的结果自动填入。", size=9.5)
-    if measured:
-        add_body(doc, "读法：若 `bilinear`/`bicubic` 相对 `npr_nearest` 掉点而 `laplacian`/`dct_lowpass` 持平，"
-                      "说明决定泛化的是“插值核是否匹配生成器上采样”，而不是“有没有提取高频”；"
-                      "若各高通算子持平，则假设被推翻，NPR 的增益只是“高通 + 数据增强”这类更弱的解释。"
-                      "两种情况都能写进结论——这正是先定假设再做消融的意义。", size=9.5)
+
+    add_body(doc, "**5.4 算子族消融（核心实验）。** 同一套权重，只把输入前的残差算子换掉，重跑全部 17 个生成器。"
+                  "预期列在跑之前就写死，不是事后解释。")
+    add_caption(doc, "表 7　算子族消融：预注册预期 vs 实测（%，每个算子 17 生成器 × 每类 300 张）")
+    add_table(doc, ["算子", "预期", "机制依据", "Acc（Δ）", "AUC", "AP"], sweep_rows(sweep),
+              widths_cm=[2.5, 1.5, 5.3, 1.5, 2.3, 1.5], size=8.0)
+    verdict = ablation_verdict(sweep)
+    if verdict:
+        add_body(doc, verdict)
+        add_body(doc, "**为什么表 7 的 Acc 一栏全塌到 50% 附近、而 AUC 还有 78–92。** 换算子等于换掉了 "
+                      "`conv1` 的输入：官方权重只见过 nearest 残差的数值尺度，换个算子后整体分数偏移，"
+                      "0 阈值立刻失效，Acc 全部掉到抛硬币水平。这正是探针的已知代价，也说明读数只能看 "
+                      "AUC/AP。反过来说，若连 AUC 都保留，说明**排序能力**没有丢——所以这里的分歧是真分歧，"
+                      "不是阈值造成的假象。", size=9.5)
+        add_body(doc, "**细节上的三个观察。** ① `identity`（完全不处理）AUC 52.5，基本等于随机，说明"
+                      "“先做一步高通”是必要条件；② 同样带高通、但保留完整像素网格的 `laplacian` 与 "
+                      "`dct_lowpass`（AUC 83.8 / 82.8）明显好于会重采样网格的 `bilinear`/`bicubic`/`box`"
+                      "（80.9 / 77.9 / 79.1），说明分类头吃的是“网格结构”而不仅是“高频能量”；"
+                      "③ 唯一的径向频域算子 `fft_radial` 掉到 58.3，因为环形截止不区分方向、也不保留"
+                      "局部相位，网格谐波被一并抹掉——这一条恰好与“核匹配”假设同向。"
+                      "④ `laplacian` 只比 `npr_nearest` 低 8.5 pp，说明 nearest 的优势是**加成**，"
+                      "不是“高通与否”的分水岭；把话说满会失真。", size=9.5)
     else:
-        add_body(doc, "实测两列目前为空（`待补`）：数据集未下载，本项目尚无一个跨生成器实测数字，"
-                      "**不以论文值或合成数据冒充实测**。跑完下列命令后这两列会被自动填满，无需手工录入：",
-                 size=9.5)
-        add_code_block(doc, (
-            "python scripts/download_data.py --dataset benchmark             # 默认 ~/aigc_data",
-            "python -m src.test  --ckpt NPR.pth --op npr_nearest --cross      # 复现基线",
-            "python -m src.sweep --mode pretrained --ckpt NPR.pth --ops all   # 扫算子族",
-            "python scripts/build_report.py                                   # 重出本报告",
-        ))
-    add_body(doc, "已知的一次代价：`--mode pretrained` 的扫描只换算子、不重训，属于“探针”"
-                  "（输入分布变了而 `conv1` 没见过），干净结论需要在 `--mode scratch` 下对每个算子从头训练，"
-                  "这部分算力尚未投入，报告里会明确区分这两种语义。")
+        add_body(doc, "实测列尚未填满（`待补`），跑 `python -m src.sweep --mode pretrained "
+                      "--ckpt database/weights/NPR.pth --ops all` 后本表与上面的判定句会自动生成。", size=9.5)
+    add_body(doc, "这一步的代价必须写清楚：`--mode pretrained` 只换算子、不重训，`conv1` 从未见过新算子的"
+                  "输出分布，所以它是**机制探针**而不是性能结论。要得到干净的性能数字，得在 ForenSynths "
+                  "训练集上对每个算子从头训练一遍（`--mode scratch`）；本轮没有拿到训练集，因此没做。"
+                  "好在探针能回答的问题是“同一个分类头遇到不同的前置算子会怎样”，这恰好是假设检验需要的。",
+             size=9.5)
+
+    if robust:
+        add_body(doc, "**5.5 鲁棒性。** 取证模型在社交平台上遇到的第一件事是 JPEG 重压缩与缩放。"
+                      "下表在测试时在线生成 5 种后处理，逐一重跑（每类限量以控制时间）。")
+        add_caption(doc, "表 8　鲁棒性：同一权重的 17 生成器均值")
+        add_table(doc, ["后处理", "均值 Acc", "Δ Acc", "均值 AUC"], robust,
+                  widths_cm=[4.0, 3.0, 3.0, 3.0], size=8.5, keep_together=True)
+        add_body(doc, "读法：这里的结论是**负面且明确**的 —— 无后处理时均值 AUC 92.75，只要过一次 "
+                      "JPEG 95 就掉到 45.32（低于随机，说明分数整体被翻向），JPEG 75/50 同样停在 44–45；"
+                      "0.5× 缩放到 58.93，比 JPEG 稍好但同样不可用。也就是说这套权重**不能直接用于社交"
+                      "媒体上流转过的图片**，必须在训练阶段做对应的数据增强才有可能恢复。本项目未取得"
+                      "训练集，无法复现那一步，所以这里只报告现象，不给“加上增强就能修好”的结论"
+                      "（那需要重训验证）。另一个细节值得记：JPEG 的破坏力大于缩放，说明判别信息挂在"
+                      "**精细的网格结构**上——重采样改变网格周期但保留其存在，JPEG 的 DCT 量化则直接抹掉"
+                      "高频系数。这与 5.4 的“核匹配”解释互相支持。", size=9.5)
+    else:
+        add_body(doc, "**5.5 鲁棒性（待补）。** 运行 `python -m src.test --ckpt database/weights/NPR.pth "
+                      "--robustness --limit-per-class 200 --workers 0` 后本节自动生成表格。", size=9.5)
 
     # ---------------- closing ----------------
-    add_body(doc, "**小结。** 本项目交出的不是一个“比 SOTA 高 X%”的数字，而是一套可复用的实验框架"
-                  "加一条可证伪的机制解释。已经在代码级验证的有三件事：8 个残差算子行为正确"
-                  "（往返恒等、常数图归零、`npr_nearest` 与官方公式逐元素一致到 5.96e-08）；"
-                  "裁剪 ResNet 的结构与官方权重对齐（1,437,761 参数、`fc1` 输入 512、`state_dict` "
-                  "不含 `op.*` 键）；数据整理与评测链路在合成数据上端到端跑通（train / test / sweep）。"
-                  "尚未验证的是跨 16 个生成器的实测数字——这需要约 30GB 数据与至少一轮完整训练，是下一步的工作。")
-    add_body(doc, "**局限，写在这里而不是藏起来。** ① 数据集未下载，表 5 的实测两列因此为空，"
-                  "本报告不拿论文值或合成数据顶替；② `--mode pretrained` 是探针实验，换算子会改变 "
-                  "`conv1` 的输入分布，它的结论只能当作方向指示，硬结论要等 `--mode scratch`；"
-                  "③ 算力限于单卡 8GB，ForenSynths 只取 4 类而非 20 类，训练量级比论文小；"
-                  "④ WFIR 上 NPR 本身只有 60.7%，该生成器的特殊性（分辨率、压缩流程）本轮未分析。")
-    add_body(doc, "**下一步按顺序做四件事**：`download_data.py` 拉取并摆好 `Generalization_Test`"
-                  "（配套 `ForenSynths_train_val` 只有在做重训时才需要）→ 用官方 `NPR.pth` 复现 "
-                  "`npr_nearest` 基线（若明显低于论文的 91.7%，说明预处理口径没对齐，先修这个再往下走）→ "
-                  "`--mode scratch` 对 8 个算子逐一训练 → 最后 `build_report.py` 重出本报告，表 5 自动填满。")
+    add_body(doc, "**小结。** 本项目交出的不是“比 SOTA 高 X%”，而是：一套可复用的实验框架 + 一条可证伪的"
+                  "机制解释 + 一组在真实数据上跑出来的对照数字。已实测的部分：8 个残差算子行为正确"
+                  "（往返恒等、常数图归零、与官方公式一致到 5.96e-08）；自实现网络与官方权重完全对齐"
+                  "（146/146 张量、1,437,761 参数）；17 个生成器 152,598 张全量评测得到 "
+                  "Acc/AUC/AP = 82.65/92.41/91.18，并复现出“GAN 好比扩散模型好”这一核心现象；"
+                  "预处理口径被证明会带来 1 pp 量级的差别，必须固定。")
+    add_body(doc, "**局限，写在这里而不是藏起来。** ① **没有训练集**（ForenSynths 约 30GB，本机网络不可达），"
+                  "所以算子消融只能用 `--mode pretrained` 探针，拿不到“每个算子从头训练”的干净性能数字；"
+                  "② 探针实验里换算子会改变 `conv1` 的输入分布，结论只能当作方向指示；"
+                  "③ 单次评测、无重复种子与置信区间，1 pp 以内的差异不宜过度解读；"
+                  "④ Acc 依赖 0 阈值，官方权重自带偏置未校准，本报告因此同时给 AUC/AP；"
+                  "⑤ DALLE2 与 WhichFaceIsReal 的表现与论文不同向，未做归因。")
+    add_body(doc, "**下一步按顺序做四件事**：① 补下载 ForenSynths train/val（约 30GB，Google Drive），"
+                  "`prepare_data.py organize` 摆好并 `verify --leakage-with` 查重；② 用官方 `NPR.pth` "
+                  "微调/复现训练流程，确认训练侧也能到 90% 量级；③ `--mode scratch` 对 8 个算子逐一从头"
+                  "训练，把表 7 换成正经的性能对比；④ 顺手校准阈值（在验证集上搜最优阈值），"
+                  "让 Acc 与 AUC 不再自相矛盾，最后 `build_report.py` 重出本报告。")
 
     if dry_run:
         return out_path

@@ -66,6 +66,8 @@ python scripts/prepare_data.py manifest --root datasets/... --out manifests/xxx.
 | D14 | 作业报告由 `scripts/build_report.py` 生成，而非手写 docx | 表 5 的五列要在跑完 sweep 后填数，手抄必错且不可复现；生成器还能保证"重跑一次报告＝同一次结果"。代价是要处理 docx 细节（模板只有 `Normal Table` 样式、正文要把 `w:sectPr` 之外的 body 全清再写、表格不跨页要点 `cantSplit`）。 |
 | D15 | 表 5 的"预期/机制依据"两列预注册在 `EXPECTED` 字典里 | 结果出来之后再解释机制，任何假设都能自圆其说；先写下"换成 bilinear 应该掉点"再跑，才构成可证伪的检验。没有实测时这两列照常显示，实测两列写 `待补`。 |
 | D16 | 新增 `scripts/download_data.py` 把"下载→解压→摆位→体检"串成一条命令，而非只给 README 里的 gdown 手工步骤 | 官方三个包的形状各不相同（`0_real`/`1_fake`、嵌套 benchmark、生成器内部再按物体类别分子目录、`guided` 之类别名），手工 mv 一遍要 20 分钟且极易把 ProGAN 的 car/cat 当成两个生成器；脚本把这段固定下来，并复用 `prepare_data.py` 的配对/去重/体检逻辑而不是重写一份。下载本身仍可能在校园网失败，故保留 `--local-dir`/`--local-archive` 两条离线入口。 |
+| D17 | 拿不到训练集时，消融只做 `--mode pretrained` 探针，并**在报告里明写它是什么** | 备选是"先在 AIGI_test 的某个子集上自训一个模型再消融"，被否：那会把"评测集"当训练集用，直接污染后面所有跨生成器结论，而且与官方权重的数字不可比。探针能回答的问题是"同一个分类头遇到不同前置算子会怎样"，这恰好是假设检验需要的；它的局限（`conv1` 没见过新算子分布）写进报告局限一节，而不是藏起来。 |
+| D18 | 评测返回**原始 logit**，阈值默认 0.0，并一律同时报 Acc/AUC/AP | 官方权重分数被 sigmoid 压饱和（见 §3.1 第 11 条）后，AUC 会假性 0.5；只报 Acc 又会让"阈值没校准"和"排序能力差"混为一谈。三者同报，读者才能分清是判别力问题还是校准问题。 |
 
 ### 3.1 实测中修掉的错误（都被测试逮住了）
 
@@ -112,6 +114,36 @@ python scripts/prepare_data.py manifest --root datasets/... --out manifests/xxx.
     但 `acc` 一律 50.00：所有分数都挤在 0.99 以上，固定阈值 0.5 把每张图都判成 fake。
     所以主指标取 **AUC / AP**，`acc` 只作参考，另报 `acc_best`（阈值搜索）与
     `tpr@fpr5`。报告第 5 节引用 acc 时必须同时说明阈值。
+
+以上 10 条都在合成数据阶段暴露。接上真实数据（`AIGI_test`，152,598 张）和官方权重
+（`NPR.pth`）后又出现 3 条，全都是"只有真数据 + 真权重才会触发"的：
+
+11. **logit 饱和把信号全抹掉。** 官方权重在真实图上输出的 logit 量级高达数百，
+    `sigmoid` 在 |logit| > 17 之后在 float32 里就饱和成 1.0，于是所有样本得到同一个分数：
+    AUC 假性 ≈ 0.5、Acc 假性 50%，而程序一句警告都没有（这正是更早那次合成数据上
+    "acc 一律 50.00"的真因，当时误判成并列值）。修：`src/eval/engine.py` 的
+    `collect_scores` 改为返回**原始 logit**（两个输出时取 `logits[:,1]-logits[:,0]`），
+    新增 `DEFAULT_THRESHOLD = 0.0`；所有调用方（`evaluate_loader` / `cross_generator` /
+    `robustness`）的默认阈值同步改成 0.0。教训：**评测层不要过 sigmoid**，单调变换
+    对 AUC/AP 无意义，却会因浮点饱和丢掉全部排序信息。
+
+12. **`--max-batches` 会只截到一类。** 数据集里 real 文件排在 fake 前面，按 batch 截断时
+    前若干个 batch 全是实类 → 只有一类样本，`auc` 直接是 `nan`，而指标函数照样返回。
+    修：数据集新增 `limit_per_class`，**每类各截 N 张**（`--limit-per-class`），
+    `build_eval_loader` 读 `cfg["data"]["eval_limit_per_class"]`；
+    `cross_generator` 在某生成器只有一类样本时打印 `[warn] ... use --limit-per-class`。
+
+13. **一条坏 JPEG 能崩掉整轮 34 GB 的评测。** 真实测试集里有尾部缺字节的文件：
+    `OSError: image file is truncated (18 bytes not processed)`，一个文件让整次 18 分钟的
+    评测白跑。修：`src/data/datasets.py` 顶上显式 `ImageFile.LOAD_TRUNCATED_IMAGES = True`
+    （公开数据集常见缺陷，PIL 补齐即可，业内常规处理），同时把读取包进 try/except 并
+    `raise RuntimeError(f"unreadable image: {path} ({exc})")` —— 万一真要失败，**报错里必须
+    带文件名**，否则只能靠二分猜。
+
+14. **`_family()` 把扩散模型判成 GAN。** 名字表只列了 `sdv4`/`adm` 这类短名，
+    而真实目录叫 `stable_diffusion_v_1_4`、`coco_sdxl_nw` → 被归进 GAN 组，
+    "GAN vs 扩散"的分组均值直接错掉（这是报告里最重要的一个对照）。
+    修：改为字母数字归一化后匹配集合 + `("diffusion","sdxl","dalle","midjourney")` 子串兜底。
 
 ## 4. 实验矩阵与报告表格模板
 

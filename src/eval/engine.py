@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ..utils import get_device, logits_to_score
+from ..utils import get_device
 from .metrics import binary_metrics
 
 __all__ = [
@@ -18,6 +18,15 @@ __all__ = [
     "evaluate_loader",
     "summarise",
 ]
+
+#: The single-output NPR head produces raw logits with no saturation bound.
+#: ``sigmoid`` maps anything beyond |logit| ~ 17 to exactly 0.0 / 1.0 in float32,
+#: which collapses thousands of samples into one tie value: AUC then reads ~0.5
+#: and every sample is predicted "fake", so accuracy pins to the class ratio
+#: (50 % on a balanced split). Scores are therefore kept as raw logits, which are
+#: monotone in P(fake) -- AUC/AP are unaffected -- and the decision boundary
+#: moves to 0.0, since logit > 0 <=> P(fake) > 0.5.
+DEFAULT_THRESHOLD = 0.0
 
 
 def _strip_module_prefix(sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -72,7 +81,11 @@ def collect_scores(
     max_batches: Optional[int] = None,
     progress: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Run the model and return ``(labels, fake_probability)`` as numpy arrays."""
+    """Run the model and return ``(labels, scores)`` as numpy arrays.
+
+    ``scores`` are **raw logits** (higher = more likely fake), not probabilities;
+    see ``DEFAULT_THRESHOLD`` for why sigmoid is deliberately avoided here.
+    """
     if device is None:
         device = next(model.parameters()).device
     model.eval()
@@ -93,7 +106,9 @@ def collect_scores(
             break
         imgs = imgs.to(device, non_blocking=True)
         logits = model(imgs)
-        scores.append(logits_to_score(logits).detach().cpu().numpy())
+        if logits.dim() > 1 and logits.size(1) > 1:
+            logits = logits[:, 1] - logits[:, 0]
+        scores.append(logits.reshape(-1).float().detach().cpu().numpy())
         labels.append(np.asarray(targets).reshape(-1))
 
     if not labels:
@@ -106,7 +121,7 @@ def evaluate_loader(
     model: nn.Module,
     loader,
     device: Optional[torch.device] = None,
-    threshold: float = 0.5,
+    threshold: float = DEFAULT_THRESHOLD,
     max_batches: Optional[int] = None,
     progress: bool = False,
 ) -> Dict[str, float]:

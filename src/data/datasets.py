@@ -33,10 +33,17 @@ import os
 from typing import List, Optional, Sequence, Tuple
 
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
 from ..layout import TRUTHY_FAKE, TRUTHY_REAL, pair_class_dirs
+
+# The published AIGCDetectBenchmark / ForenSynths dumps contain a handful of
+# JPEGs whose final bytes never got written ("image file is truncated (18 bytes
+# not processed)"). One such file aborts a 150k-image evaluation run, so PIL is
+# told to pad the missing bytes instead. Standard practice for scraped image
+# corpora; it touches a few files, not the protocol.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 __all__ = [
     "BinaryForensicsDataset",
@@ -55,7 +62,8 @@ class BinaryForensicsDataset(Dataset):
     fake is index 1. Both cases agree with "fake is the positive class".
     """
 
-    def __init__(self, root: str, transform=None, fake_dirs: Sequence[str] = ("fake",)):
+    def __init__(self, root: str, transform=None, fake_dirs: Sequence[str] = ("fake",),
+                 limit_per_class: Optional[int] = None):
         self.root = root
         self.transform = transform
         self.fake_dirs = tuple(fake_dirs)
@@ -63,10 +71,15 @@ class BinaryForensicsDataset(Dataset):
         real_dir, fake_dir = self._resolve_dirs(root)
         self.samples: List[Tuple[str, int]] = []
         for d, label in ((real_dir, 0), (fake_dir, 1)):
-            for name in sorted(os.listdir(d)):
-                p = os.path.join(d, name)
-                if os.path.isfile(p):
-                    self.samples.append((p, label))
+            names = [n for n in sorted(os.listdir(d))
+                     if os.path.isfile(os.path.join(d, n))]
+            # Cap each class separately. Truncating a concatenated list instead
+            # would leave the first batch real-only, and every rank metric (AUC,
+            # AP) then comes back NaN because one class is missing.
+            if limit_per_class is not None:
+                names = names[:int(limit_per_class)]
+            for name in names:
+                self.samples.append((os.path.join(d, name), label))
         if not self.samples:
             raise RuntimeError(f"no images found under {root}")
         self.targets = [t for _, t in self.samples]
@@ -100,9 +113,14 @@ class BinaryForensicsDataset(Dataset):
         # inlined torchvision.datasets.folder.default_loader: this project only
         # needs torch + Pillow, and keeping torchvision out means the package
         # imports on a torch-only CPU box
-        with open(path, "rb") as f:
-            img = Image.open(f)
-            img = img.convert("RGB")
+        try:
+            with open(path, "rb") as f:
+                img = Image.open(f)
+                img = img.convert("RGB")
+        except OSError as exc:
+            # name the file: a bare "image file is truncated" over 150k images
+            # costs an hour of bisecting
+            raise RuntimeError(f"unreadable image: {path} ({exc})") from exc
         if self.transform is not None:
             img = self.transform(img)
         return img, target

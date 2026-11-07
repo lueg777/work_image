@@ -26,7 +26,7 @@ import torch.nn as nn
 from ..build import build_eval_loader
 from ..data.datasets import list_generators
 from ..utils import write_csv
-from .engine import evaluate_loader, summarise
+from .engine import DEFAULT_THRESHOLD, evaluate_loader, summarise
 from .cross_generator import _family
 
 __all__ = ["ATTACKS", "run_robustness", "format_matrix"]
@@ -46,7 +46,7 @@ def run_robustness(
     test_root: str,
     cfg: dict,
     device: Optional[torch.device] = None,
-    threshold: float = 0.5,
+    threshold: float = DEFAULT_THRESHOLD,
     max_batches: Optional[int] = None,
     op_name: str = "",
     attacks: Optional[List[tuple]] = None,

@@ -25,19 +25,32 @@ import torch.nn as nn
 from ..build import build_eval_loader, REPO_ROOT
 from ..data.datasets import list_generators
 from ..utils import write_csv
-from .engine import evaluate_loader, summarise
+from .engine import DEFAULT_THRESHOLD, evaluate_loader, summarise
 
 __all__ = ["run_cross_generator", "format_table"]
 
 # Diffusion-family generators get flagged so the report can split GAN vs diffusion.
+# Benchmark folders are named in several styles ("ADM", "stable_diffusion_v_1_4",
+# "coco_sdxl_nw"), so matching is done on an alphanumeric-normalised name instead
+# of raw equality -- otherwise SDv1.4 lands in the GAN bucket and the split means
+# nothing.
 DIFFUSION_TAGS = {
     "ADM", "Glide", "Midjourney", "SDv1.4", "SDv1.5", "SDv2.1", "VQDM",
     "Wukong", "DALLE2", "ddpm", "iddpm", "sdv4", "sdv5", "sdxl", "vqdiffusion",
+    # full folder names seen in AIGCDetectBenchmark / AIGI_test
+    "stablediffusionv14", "stablediffusionv15", "stablediffusionv21",
+    "stablediffusion", "cocosdxlnw", "vqdm2",
 }
+_DIFFUSION_NORM = {"".join(ch for ch in tag.lower() if ch.isalnum())
+                   for tag in DIFFUSION_TAGS}
+_DIFFUSION_MARKERS = ("diffusion", "sdxl", "dalle", "midjourney")
 
 
 def _family(generator: str) -> str:
-    return "diffusion" if generator in DIFFUSION_TAGS else "gan"
+    norm = "".join(ch for ch in generator.lower() if ch.isalnum())
+    if norm in _DIFFUSION_NORM or any(m in norm for m in _DIFFUSION_MARKERS):
+        return "diffusion"
+    return "gan"
 
 
 def run_cross_generator(
@@ -45,7 +58,7 @@ def run_cross_generator(
     test_root: str,
     cfg: dict,
     device: Optional[torch.device] = None,
-    threshold: float = 0.5,
+    threshold: float = DEFAULT_THRESHOLD,
     max_batches: Optional[int] = None,
     op_name: str = "",
     out_csv: Optional[str] = None,
@@ -67,6 +80,12 @@ def run_cross_generator(
             continue
         m = evaluate_loader(model, loader, device=device, threshold=threshold,
                             max_batches=max_batches, progress=progress)
+        n_pos = m.get("tp", 0) + m.get("fn", 0)
+        n_neg = m.get("fp", 0) + m.get("tn", 0)
+        if not n_pos or not n_neg:
+            print(f"  [warn] {gen}: only one class in the sample "
+                  f"({n_neg} real / {n_pos} fake) -- AUC and AP are undefined. "
+                  "A truncated --max-batches does this; use --limit-per-class.")
         row = {"generator": gen, "family": _family(gen), "op": op_name,
                "n_real": sum(1 for _, t in dset.samples if t == 0),
                "n_fake": sum(1 for _, t in dset.samples if t == 1)}

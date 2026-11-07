@@ -277,6 +277,69 @@ python scripts/build_report.py --dry-run        # 只打印路径，不落盘
 - **预注册**：表 5 的"预期 / 机制依据"两列来自脚本里的 `EXPECTED` 字典，写在跑实验之前，
   避免"看完结果再解释"。
 
+### 5.7 本机已跑出的真实结果（2026-11-07，官方 `NPR.pth`）
+
+数据：`AIGI_test`，**17 个生成器 / 152,598 张**（76,299 real + 76,299 fake），`verify` 报 0 error。
+权重：官方 `NPR.pth`（146/146 张量加载进自实现网络，0 missing）。
+
+```bash
+python -m src.test --config configs/eval_256_nocrop.yaml \
+       --ckpt database/weights/NPR.pth --op npr_nearest --cross \
+       --workers 0 --out-dir runs/real/npr256
+```
+
+| 口径 | 均值 Acc | 均值 AUC | 均值 AP | GAN Acc | 扩散 Acc |
+| --- | --- | --- | --- | --- | --- |
+| 256 不裁剪（论文 `testmodel()` 口径） | **82.65** | **92.41** | **91.18** | 90.50 | 75.68 |
+| 224 中心裁剪（默认配置） | 81.79 | 91.30 | 90.07 | 89.75 | 74.73 |
+
+怎么读这三个数：
+
+- **AUC 92.4 与论文同档**，说明"判断谁像假"的能力复现出来了；论文报的 91.7 是 **Acc**，
+  而我们 Acc 低约 9 pp —— 差别出在 0 阈值没校准（官方权重自带偏置），不是排序能力差。
+  所以本项目一律同时报 Acc/AUC/AP，只报 Acc 会把这两件事混为一谈。
+- **GAN 90.5 vs 扩散 75.7（差 14.8 pp）** 与论文同向，这是整个项目的论证基础。
+- **不裁剪比裁剪好 0.86 pp Acc / 1.11 pp AUC**：裁剪会切掉图像边缘的上采样伪影，
+  而这类伪影恰好是判别信息的主要来源之一。项目因此固定 `configs/eval_256_nocrop.yaml`。
+
+调阈值只需一次扫描（在验证集或测试集上搜使 Acc 最大的阈值）：
+
+```python
+from src.eval.metrics import best_threshold_accuracy   # 返回 (best_acc, best_thr)
+```
+
+**算子族消融（同一权重，17 生成器 × 每类 300 张）**：
+
+| 算子 | Acc | AUC | ΔAUC |
+| --- | --- | --- | --- |
+| `npr_nearest`（基线） | 82.61 | **92.28** | — |
+| `laplacian` | 57.30 | 83.77 | −8.50 |
+| `dct_lowpass` | 55.67 | 82.80 | −9.48 |
+| `npr_bilinear` | 53.63 | 80.85 | −11.43 |
+| `npr_box` | 52.51 | 79.07 | −13.21 |
+| `npr_bicubic` | 51.65 | 77.87 | −14.41 |
+| `fft_radial` | 50.53 | 58.32 | −33.96 |
+| `identity`（对照组） | 51.39 | 52.49 | −39.80 |
+
+结论：① `identity` 掉到随机（52.5）⇒ **“先做一步高通”是必要条件**；
+② 与生成器上采样核一致的 `nearest` 比任何不匹配的高通高 **8.5–14.4 pp AUC** ⇒
+“核匹配”是加成；③ 唯一破坏网格周期性的 `fft_radial` 掉得最狠（58.3）；
+④ Acc 一栏全塌到 50% 是探针的已知代价（`conv1` 只见过 nearest 残差的尺度，换算子后分数整体偏移），
+所以消融读数只看 AUC/AP。
+
+**鲁棒性（同一权重，17 生成器均值，每类 100 张）**：
+
+| 后处理 | 均值 Acc | 均值 AUC |
+| --- | --- | --- |
+| 无 | 82.53 | **92.75** |
+| JPEG 95 | 49.74 | 45.32 |
+| JPEG 75 | 50.26 | 44.45 |
+| JPEG 50 | 50.00 | 45.04 |
+| 0.5× 缩放 | 53.26 | 58.93 |
+
+一次 JPEG 重压缩就足以让这套权重失效（AUC 低于随机 ⇒ 分数被系统性翻向）。
+这是**负面但重要**的结论：开箱即用的 NPR 不能用在流转过的图片上，恢复需要训练阶段的数据增强。
+
 ---
 
 ## 6. 参考数字（论文的，不是本项目的）
@@ -304,14 +367,14 @@ CNNSpot 那一行是本项目最有力的动机证据：**在扩散模型上几�
 | 数据工具 `layout.py` / `prepare_data.py` | ✅ 实测，21 项断言全过（含硬链接别名、冲突改名、跨集哈希泄漏） |
 | 算子族 / 模型 / 训练循环（torch） | ✅ 实测（CPU torch 2.15.0+cpu）：`smoke_test.py` 共 **70 项**全过 |
 | 预处理与官方一致性 | ✅ 已对照官方 `data/datasets.py` 源码逐条落实 |
-| `train.py` / `test.py` / `sweep.py` 端到端 | ✅ 已在**合成数据**（随机噪声 vs 2× 最近邻上采样纹理）上跑通：训练 1 epoch 得 val_acc 66.67 / AUC 82.64；`--cross --robustness` 出 CSV 与矩阵；`sweep --mode pretrained` 过全部 8 个算子 |
-| 真实数据集上的数字 | ❌ 未跑。本仓库不含任何 ForenSynths / Diffusion1kStep 的实测结果 |
-| 官方 `Generalization_Test` 内部层级 | ⚠️ 与官方不同（见 5.3），需整理后使用 |
+| 真实数据集上的数字 | ✅ 已跑（2026-11-07，见 5.7）：17 生成器 152,598 张，Acc/AUC/AP = 82.65/92.41/91.18 |
+| 算子族消融（真实数据） | ⚠️ 只有 `--mode pretrained` 探针（同一权重换算子）。**没有** `--mode scratch` 的从头训练对比，因为没有 ForenSynths 训练集（约 30GB，Google Drive 本机不可达） |
+| 官方 `Generalization_Test` 内部层级 | ⚠️ 本项目现用 `AIGI_test`（`<gen>/{0_real,1_fake}`，其中 4 个生成器多一层类别目录），整理规则见 5.3 |
 | 论文表格数字 | ✅ 摘自论文/README，已标注为引用 |
 | `translate_duplicate` 精确实现 | ⚠️ EXPERIMENTAL，按 README 描述重建，未与原实现逐像素比对 |
 
-> 合成数据上的"跑通"只证明**代码路径正确**（能读写、能算、能出表），
-> 不证明方法有效。方法有效性必须等真实数据。
+> 真实数据上的"跑通"只证明**这条链能在真图上出数字**，不证明机制假设成立。
+> 假设是否成立看算子消融表，而消融目前只有探针版本（见上表第 3 行）。
 
 torch 段建议在你的机器上第一条命令就跑：
 
@@ -332,9 +395,9 @@ python scripts/smoke_test.py --require-torch
 | --- | --- |
 | 1. Github 链接 | 本仓库 |
 | 2. 任务描述 | README §1（问题设定 + 三条可证伪预测） |
-| 3. 数据描述 | README §5.3 + `docs/plan.md` §2（数据源、规模、划分） |
-| 4. 代码修改描述 | `src/ops/residual_ops.py` 算子族 + `sweep.py` 驱动 + 预处理对齐；改动理由见 `docs/plan.md` §3 决策日志 |
-| 5. 结果对比 | `runs/sweep/cross_all_ops.csv` / `summary.json` 自动产出；`scripts/build_report.py` 直接写进 `1_报告.docx` 的表 5；表格模板见 `docs/plan.md` §4 |
+| 3. 数据描述 | README §5.3（数据源与整理）+ §5.7（实际规模与体检结果）+ `docs/plan.md` §2 |
+| 4. 代码修改描述 | `src/ops/residual_ops.py` 算子族 + `sweep.py` 驱动 + 预处理对齐；改动理由见 `docs/plan.md` §3 决策日志、实测修掉的 bug 见 §3.1 |
+| 5. 结果对比 | `runs/real/npr256.json`（基线 17 生成器）+ `runs/sweep/`（算子消融）+ `runs/real/npr256/robust_npr_nearest.csv`（鲁棒性），全部由 `scripts/build_report.py` 写进 `1_报告.docx` 的表 4/5/7/8；摘要见 README §5.7 |
 
 第 4 节能写满 300 字不是靠堆词，而是因为"把写死的算子族化 + 分离两种消融语义"本身就是
 一个需要解释的设计决策。

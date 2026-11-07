@@ -56,6 +56,9 @@ def parse_args(argv=None):
                    help="epochs per operator for --mode scratch")
     p.add_argument("--max-batches", type=int, default=None,
                    help="cap eval batches per generator (fast iteration)")
+    p.add_argument("--limit-per-class", type=int, default=None,
+                   help="cap each class at N images, balanced (recommended over "
+                        "--max-batches, which truncates in file order)")
     p.add_argument("--out-dir", default="runs/sweep")
     p.add_argument("--workers", type=int, default=None,
                    help="dataloader workers; use 0 when multiprocessing is blocked")
@@ -164,6 +167,8 @@ def main(argv=None) -> int:
     cfg = load_config(args.config)
     if args.workers is not None:
         cfg.setdefault("data", {})["workers"] = args.workers
+    if args.limit_per_class:
+        cfg.setdefault("data", {})["eval_limit_per_class"] = args.limit_per_class
     ops = _resolve_ops(args.ops)
     out_dir = ensure_dir(args.out_dir)
     print(f"mode={args.mode}  ops={ops}")

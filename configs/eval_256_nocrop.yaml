@@ -1,0 +1,38 @@
+# Variant of configs/default.yaml: evaluate on the whole 256x256 resize instead
+# of a 224 centre crop.
+#
+# Why a separate file: NPR's own testmodel() runs with no_resize=False,
+# no_crop=True, i.e. Resize(256) with no crop, while get_val_opt() uses
+# Resize(256) + CenterCrop(224). The released table does not say which one it
+# used, so both are run and the closer one to the published average is reported
+# alongside the other. Everything else is identical to default.yaml.
+
+op: npr_nearest
+
+data:
+  train_root: datasets/ForenSynths_train_val/train
+  val_root: datasets/ForenSynths_train_val/val
+  test_root: datasets/Generalization_Test
+
+  crop_size: 224
+  load_size: 256
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  flip: true
+  resize_mode: resize
+
+  eval_no_crop: true
+  eval_no_resize: false
+
+  degradation_stage: after_resize
+
+model:
+  layers: [3, 4]
+  num_classes: 1
+  op_kwargs: {}
+
+train:
+  epochs: 50
+  lr: 0.0002
+  delr_freq: 10

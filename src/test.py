@@ -34,6 +34,10 @@ def parse_args(argv=None):
     p.add_argument("--cross", action="store_true", help="run cross-generator sweep")
     p.add_argument("--robustness", action="store_true", help="run attack sweep")
     p.add_argument("--max-batches", type=int, default=None)
+    p.add_argument("--limit-per-class", type=int, default=None,
+                   help="cap each class at N images, balanced (use this instead of "
+                        "--max-batches: truncating in file order leaves a "
+                        "single-class sample and AUC/AP come back NaN)")
     p.add_argument("--workers", type=int, default=None,
                    help="dataloader workers; use 0 when multiprocessing is blocked")
     p.add_argument("--out-json", default=None)
@@ -47,6 +51,8 @@ def main(argv=None) -> int:
     cfg = load_config(args.config)
     if args.workers is not None:
         cfg.setdefault("data", {})["workers"] = args.workers
+    if args.limit_per_class:
+        cfg.setdefault("data", {})["eval_limit_per_class"] = args.limit_per_class
     op = args.op or cfg.get("op", "npr_nearest")
     test_root = args.test_root or cfg["data"]["test_root"]
     if args.config is None and args.test_root:
