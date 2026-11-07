@@ -64,6 +64,8 @@ REFERENCES: List[str] = [
     "AI-Generated Images. NeurIPS Datasets and Benchmarks, 2023. （百万级基准，本报告未使用但列为后续可扩展）",
 ]
 REPO_URL = "https://github.com/lueg777/work_image"
+PUSHED_COMMITS = 7
+PUSHED_FILES = 45
 
 BODY_FONT = "宋体"
 HEAD_FONT = "黑体"
@@ -751,10 +753,10 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     add_rich(p, "仓库地址：", size=10.5)
     add_hyperlink(p, REPO_URL, REPO_URL, size=10)
-    add_rich(p, "。本地已完成 `git init` 与首次"
-                "提交（分支 `main`，工作区干净），`origin` 已指向该仓库；"
-                "推上去之后此链接即为最终代码。若地址有变，改 `scripts/build_report.py` 里"
-                "这一行后重跑即可，不必手工改 docx。")
+    add_rich(p, "。代码已推送：分支 `main`，"
+                f"{PUSHED_COMMITS} 个提交、{PUSHED_FILES} 个文件"
+                "（`git status` 干净），仓库内容与提交包内的快照逐文件 SHA-1 一致。"
+                "若地址有变，改 `scripts/build_report.py` 里这一行后重跑即可，不必手工改 docx。")
     add_body(doc, "为保证评分时不依赖网络，提交包内 `3_可选附件或代码/aigc-freq-forensics/` "
                   "放置同一份代码快照（逐文件 SHA-1 比对一致）；两者如有差异，以 GitHub 为准。")
 
