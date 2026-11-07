@@ -27,6 +27,7 @@ import csv
 import json
 import os
 import re
+import subprocess
 import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -64,8 +65,29 @@ REFERENCES: List[str] = [
     "AI-Generated Images. NeurIPS Datasets and Benchmarks, 2023. （百万级基准，本报告未使用但列为后续可扩展）",
 ]
 REPO_URL = "https://github.com/lueg777/work_image"
-PUSHED_COMMITS = 7
+PUSHED_COMMITS = 7          # fallback only; the build reads git when it can
 PUSHED_FILES = 45
+
+
+def _git_lines(args: Sequence[str]) -> List[str]:
+    """Run a read-only git command in the repo; return its stdout lines."""
+    try:
+        out = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True,
+                             text=True, timeout=15)
+        if out.returncode == 0:
+            return [ln for ln in out.stdout.splitlines() if ln.strip()]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return []
+
+
+def pushed_state() -> Tuple[int, int]:
+    """(commit count, tracked file count) of HEAD, falling back to the constants."""
+    commits = _git_lines(["rev-list", "--count", "HEAD"])
+    files = _git_lines(["ls-tree", "-r", "--name-only", "HEAD"])
+    n_commits = int(commits[0]) if commits and commits[0].isdigit() else PUSHED_COMMITS
+    n_files = len(files) if files else PUSHED_FILES
+    return n_commits, n_files
 
 BODY_FONT = "宋体"
 HEAD_FONT = "黑体"
@@ -744,6 +766,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
 
     # ---------------- 1. github ----------------
     add_section(doc, "1. GitHub 链接")
+    _n_commits, _n_files = pushed_state()
     p = doc.add_paragraph()
     pf = p.paragraph_format
     pf.first_line_indent = Cm(0.74)
@@ -754,7 +777,7 @@ def build(out_path: str, template: str = TEMPLATE, dry_run: bool = False) -> str
     add_rich(p, "仓库地址：", size=10.5)
     add_hyperlink(p, REPO_URL, REPO_URL, size=10)
     add_rich(p, "。代码已推送：分支 `main`，"
-                f"{PUSHED_COMMITS} 个提交、{PUSHED_FILES} 个文件"
+                f"{_n_commits} 个提交、{_n_files} 个文件"
                 "（`git status` 干净），仓库内容与提交包内的快照逐文件 SHA-1 一致。"
                 "若地址有变，改 `scripts/build_report.py` 里这一行后重跑即可，不必手工改 docx。")
     add_body(doc, "为保证评分时不依赖网络，提交包内 `3_可选附件或代码/aigc-freq-forensics/` "
